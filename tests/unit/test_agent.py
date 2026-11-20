@@ -224,6 +224,9 @@ def test_stop_after_tool_returns_that_tools_output() -> None:
     result = agent.run("x")
     assert (result.stop_reason, result.output) == ("tool:submit", "DONE")
     assert [r.call.name for r in result.tool_results] == ["submit"]
+    tool_messages = [m for m in result.messages if m.role == "tool"]
+    assert [m.tool_call_id for m in tool_messages] == ["c0", "c1"]
+    assert tool_messages[1].content == "SKIPPED: run stopped (tool:submit)"
 
 
 @pytest.mark.parametrize("provider_reason", ["length", "max_tokens"])

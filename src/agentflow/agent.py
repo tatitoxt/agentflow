@@ -209,7 +209,7 @@ class Agent:
                     break
                 state.step_start = len(state.tool_results)
                 reason: str | None = None
-                for call in message.tool_calls:
+                for index, call in enumerate(message.tool_calls):
                     emit("tool_call", step, id=call.id, name=call.name, arguments=call.arguments)
                     result = self.tools.execute(call)
                     state.tool_results.append(result)
@@ -239,6 +239,15 @@ class Agent:
                     reason = next((r for c in self.stop_conditions if (r := c(state))), None)
                     if reason:
                         output, stop_reason = result.content, reason
+                        for skipped in message.tool_calls[index + 1 :]:
+                            messages.append(
+                                Message.tool(
+                                    skipped.id,
+                                    skipped.name,
+                                    f"SKIPPED: run stopped ({reason})",
+                                    is_error=True,
+                                )
+                            )
                         break
                 if reason:
                     break
