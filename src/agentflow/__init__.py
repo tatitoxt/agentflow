@@ -1,5 +1,6 @@
 """AgentFlow: a lightweight, typed framework for tool-calling AI agents."""
 
+from .agent import Agent, RunResult, RunState, StopCondition, max_tool_calls, stop_after_tool
 from .errors import (
     AgentFlowError,
     ConfigurationError,
@@ -10,11 +11,23 @@ from .errors import (
     ToolValidationError,
 )
 from .tools import Tool, ToolRegistry, ToolResult, tool
+from .tracing import Event, JSONLSink, MemorySink, Tracer, read_jsonl
 from .types import Message, ProviderResponse, ToolCall, ToolSpec, Usage
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "Agent",
+    "Event",
+    "JSONLSink",
+    "MemorySink",
+    "RunResult",
+    "RunState",
+    "StopCondition",
+    "Tracer",
+    "max_tool_calls",
+    "read_jsonl",
+    "stop_after_tool",
     "AgentFlowError",
     "ConfigurationError",
     "Message",
