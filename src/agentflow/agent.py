@@ -73,6 +73,7 @@ class _RunContext:
     tracer: Tracer
     run_id: str
     agent: str
+    state: RunState
 
 
 _current_run: contextvars.ContextVar[_RunContext | None] = contextvars.ContextVar(
@@ -171,7 +172,7 @@ class Agent:
         usage = Usage()
         specs = self.tools.specs()
         output, stop_reason = "", "max_steps"
-        token = _current_run.set(_RunContext(tracer, run_id, self.name))
+        token = _current_run.set(_RunContext(tracer, run_id, self.name, state))
         try:
             for step in range(1, self.max_steps + 1):
                 state.step = step
@@ -259,6 +260,7 @@ class Agent:
                     "handoff_start",
                     run_id=parent.run_id,
                     agent=parent.agent,
+                    step=parent.state.step,
                     to=agent.name,
                     task=task,
                 )
@@ -268,6 +270,7 @@ class Agent:
                     "handoff_end",
                     run_id=parent.run_id,
                     agent=parent.agent,
+                    step=parent.state.step,
                     to=agent.name,
                     child_run_id=result.run_id,
                     stop_reason=result.stop_reason,
