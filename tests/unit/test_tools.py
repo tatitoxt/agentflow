@@ -142,3 +142,38 @@ def test_plain_function_registration() -> None:
     assert (
         registry.execute(ToolCall(id="1", name="shout", arguments={"text": "hi"})).content == "HI"
     )
+
+
+def test_unserializable_result_becomes_tool_error() -> None:
+    @tool
+    def bad() -> dict[tuple[int, int], int]:
+        """Returns tuple keys, which JSON cannot encode."""
+        return {(1, 2): 3}
+
+    result = ToolRegistry([bad]).execute(ToolCall(id="1", name="bad", arguments={}))
+    assert result.is_error and isinstance(result.error, ToolExecutionError)
+
+
+class Query(BaseModel):
+    text: str
+
+
+def test_model_parameter_rejects_extra_fields() -> None:
+    @tool
+    def search(query: Query) -> str:
+        """Search."""
+        return query.text
+
+    with pytest.raises(ToolValidationError, match="limit: Extra inputs are not permitted"):
+        search({"text": "a", "limit": 3})
+    assert search({"text": "a"}) == "a"
+    assert search.spec.parameters["additionalProperties"] is False
+
+
+def test_positional_only_parameters_are_supported() -> None:
+    @tool
+    def scale(x: int, /, factor: int = 2) -> int:
+        """Scale x."""
+        return x * factor
+
+    assert scale({"x": 3, "factor": 3}) == 9

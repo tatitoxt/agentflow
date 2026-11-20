@@ -85,6 +85,7 @@ class Tool:
         summary, param_docs = _parse_docstring(fn.__doc__)
         self.description = description or summary or self.name
         self._model_param: str | None = None
+        self._positional: list[str] = []
         self.args_model = self._build_model(param_docs)
 
     def _build_model(self, param_docs: dict[str, str]) -> type[BaseModel]:
@@ -99,7 +100,18 @@ class Tool:
             annotation = hints.get(params[0].name)
             if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
                 self._model_param = params[0].name
-                return annotation
+                if "extra" in annotation.model_config:
+                    return annotation
+                strict: type[BaseModel] = type(
+                    annotation.__name__,
+                    (annotation,),
+                    {
+                        "model_config": ConfigDict(extra="forbid"),
+                        "__module__": annotation.__module__,
+                    },
+                )
+                return strict
+        self._positional = [p.name for p in params if p.kind is p.POSITIONAL_ONLY]
         fields: dict[str, Any] = {}
         for param in params:
             if param.name not in hints:
@@ -141,7 +153,9 @@ class Tool:
         try:
             if self._model_param is not None:
                 return self.fn(**{self._model_param: validated})
-            return self.fn(**{k: getattr(validated, k) for k in type(validated).model_fields})
+            values = {k: getattr(validated, k) for k in type(validated).model_fields}
+            args = [values.pop(k) for k in self._positional]
+            return self.fn(*args, **values)
         except Exception as exc:
             raise ToolExecutionError(self.name, exc) from exc
 
@@ -212,6 +226,10 @@ class ToolRegistry:
     def execute(self, call: ToolCall) -> ToolResult:
         try:
             value = self.get(call.name)(call.arguments)
+            try:
+                content = _serialize(value)
+            except Exception as exc:
+                raise ToolExecutionError(call.name, exc) from exc
         except (ToolNotFoundError, ToolValidationError, ToolExecutionError) as exc:
             return ToolResult(call=call, content=f"ERROR: {exc}", is_error=True, error=exc)
-        return ToolResult(call=call, content=_serialize(value), value=value)
+        return ToolResult(call=call, content=content, value=value)
