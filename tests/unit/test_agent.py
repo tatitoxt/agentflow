@@ -14,7 +14,7 @@ from agentflow import (
 )
 from agentflow.errors import ProviderError, ToolExecutionError
 from agentflow.providers import FakeProvider
-from agentflow.types import ToolSpec
+from agentflow.types import ToolCall, ToolSpec
 
 
 @tool
@@ -197,3 +197,50 @@ def test_handoff_reports_early_stop() -> None:
     )
     output = looping.as_tool()({"task": "x"})
     assert output.startswith("[worker stopped early: max_steps]")
+
+
+def _multi_call(*calls: tuple[str, dict[str, object]]) -> Message:
+    return Message.assistant(
+        tool_calls=[ToolCall(id=f"c{i}", name=n, arguments=a) for i, (n, a) in enumerate(calls)]
+    )
+
+
+def test_max_tool_calls_stops_within_a_multi_call_response() -> None:
+    provider = FakeProvider([_multi_call(("flaky", {"n": 1}), ("flaky", {"n": 2}))])
+    agent = Agent("a", provider, tools=[flaky], stop_conditions=[max_tool_calls(1)])
+    result = agent.run("x")
+    assert (result.stop_reason, result.output) == ("max_tool_calls", "1")
+    assert len(result.tool_results) == 1
+
+
+def test_stop_after_tool_returns_that_tools_output() -> None:
+    @tool
+    def submit(answer: str) -> str:
+        """Submit the final answer."""
+        return answer.upper()
+
+    provider = FakeProvider([_multi_call(("submit", {"answer": "done"}), ("flaky", {"n": 7}))])
+    agent = Agent("a", provider, tools=[submit, flaky], stop_conditions=[stop_after_tool("submit")])
+    result = agent.run("x")
+    assert (result.stop_reason, result.output) == ("tool:submit", "DONE")
+    assert [r.call.name for r in result.tool_results] == ["submit"]
+
+
+@pytest.mark.parametrize("provider_reason", ["length", "max_tokens"])
+def test_truncated_response_is_not_a_final_answer(provider_reason: str) -> None:
+    response = ProviderResponse(message=Message.assistant("partial"), stop_reason=provider_reason)
+    result = Agent("a", FakeProvider([response])).run("x")
+    assert (result.stop_reason, result.output) == ("truncated", "partial")
+
+
+def test_handoff_child_with_own_tracer_logs_into_parent_trace() -> None:
+    child_tracer, parent_tracer = Tracer(), Tracer()
+    child = Agent("child", FakeProvider(["ok"]), tracer=child_tracer)
+    parent = Agent(
+        "parent",
+        FakeProvider([FakeProvider.tool_call("handoff_to_child", task="t"), "done"]),
+        tools=[child.as_tool()],
+        tracer=parent_tracer,
+    )
+    parent.run("x")
+    assert {e.agent for e in parent_tracer.events if e.type == "run_end"} == {"child", "parent"}

@@ -27,22 +27,27 @@ class RunState:
     messages: list[Message]
     last_response: ProviderResponse | None = None
     tool_results: list[ToolResult] = field(default_factory=list)
+    step_start: int = 0
 
     @property
     def last_tool_results(self) -> list[ToolResult]:
-        calls = self.last_response.message.tool_calls if self.last_response else []
-        return self.tool_results[-len(calls) :] if calls else []
+        """Results executed so far for the current step's tool calls."""
+        return self.tool_results[self.step_start :]
 
+
+TRUNCATION_STOP_REASONS = frozenset({"length", "max_tokens"})
+"""Provider stop reasons meaning the answer was cut off by the token limit."""
 
 StopCondition = Callable[[RunState], str | None]
 """Returns a stop reason to end the run, or ``None`` to continue."""
 
 
 def stop_after_tool(name: str) -> StopCondition:
-    """Stop as soon as the tool ``name`` has returned successfully."""
+    """Stop right after the tool ``name`` returns successfully; its output becomes the answer."""
 
     def condition(state: RunState) -> str | None:
-        hit = any(r.call.name == name and not r.is_error for r in state.last_tool_results)
+        last = state.tool_results[-1] if state.tool_results else None
+        hit = last is not None and last.call.name == name and not last.is_error
         return f"tool:{name}" if hit else None
 
     return condition
@@ -149,7 +154,7 @@ class Agent:
     ) -> RunResult:
         """Run the loop until a final answer, a stop condition or ``max_steps``."""
         parent = _current_run.get()
-        tracer = tracer or self.tracer or (parent.tracer if parent else None) or Tracer()
+        tracer = tracer or (parent.tracer if parent else None) or self.tracer or Tracer()
         run_id = self.id_factory()
         parent_id = parent.run_id if parent else None
 
@@ -196,8 +201,14 @@ class Agent:
                     usage=response.usage.model_dump(),
                 )
                 if not message.tool_calls:
-                    output, stop_reason = message.content, "final_answer"
+                    truncated = response.stop_reason in TRUNCATION_STOP_REASONS
+                    output, stop_reason = (
+                        message.content,
+                        "truncated" if truncated else "final_answer",
+                    )
                     break
+                state.step_start = len(state.tool_results)
+                reason: str | None = None
                 for call in message.tool_calls:
                     emit("tool_call", step, id=call.id, name=call.name, arguments=call.arguments)
                     result = self.tools.execute(call)
@@ -225,9 +236,11 @@ class Agent:
                             name=call.name,
                             content=_preview(result.content),
                         )
-                reason = next((r for c in self.stop_conditions if (r := c(state))), None)
+                    reason = next((r for c in self.stop_conditions if (r := c(state))), None)
+                    if reason:
+                        output, stop_reason = result.content, reason
+                        break
                 if reason:
-                    output, stop_reason = state.tool_results[-1].content, reason
                     break
         finally:
             _current_run.reset(token)
