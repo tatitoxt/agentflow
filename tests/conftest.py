@@ -12,6 +12,8 @@ import pytest
 def redis_url() -> str:
     url = os.environ.get("AGENTFLOW_TEST_REDIS_URL")
     if not url:
+        if os.environ.get("AGENTFLOW_REQUIRE_REDIS") == "1":
+            pytest.fail("AGENTFLOW_REQUIRE_REDIS=1 but AGENTFLOW_TEST_REDIS_URL is not set")
         pytest.skip("set AGENTFLOW_TEST_REDIS_URL (e.g. redis://localhost:6379/0) to run")
     return url
 
