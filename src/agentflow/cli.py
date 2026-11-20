@@ -31,7 +31,12 @@ def load_example(path: str | Path) -> ModuleType:
     if spec is None or spec.loader is None:
         raise AgentFlowError(f"cannot import {file}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
     for attr in ("build_agent", "fake_provider"):
         if not callable(getattr(module, attr, None)):
             raise AgentFlowError(f"{file} must define a callable `{attr}`")

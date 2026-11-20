@@ -46,3 +46,15 @@ def test_trace_command_summarizes(tmp_path: Path, capsys: pytest.CaptureFixture[
     out = capsys.readouterr().out
     assert "tool_error" in out and "fail: tool 'fail' raised RuntimeError: boom" in out
     assert out.strip().splitlines()[-1] == "8 events, 1 runs, 1 tool calls, 1 tool errors"
+
+
+def test_example_may_define_dataclasses(tmp_path: Path) -> None:
+    example = tmp_path / "dc.py"
+    example.write_text(
+        "from __future__ import annotations\n"
+        "from dataclasses import dataclass\n"
+        "@dataclass\nclass Ticket:\n    title: str\n"
+        "def fake_provider():\n    return None\n"
+        "def build_agent(provider):\n    return None\n"
+    )
+    assert load_example(example).Ticket("x").title == "x"
