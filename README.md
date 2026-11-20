@@ -174,11 +174,11 @@ make audit                     # pip-audit on the locked dependency set
 
 | Suite | Count | What it covers |
 |-------|------:|----------------|
-| `tests/unit` | 62 | tools/schemas, providers' wire formats and retries, loop, stop conditions, errors, handoff, memory, tracing, CLI, README example |
+| `tests/unit` | 63 | tools/schemas, providers' wire formats and retries, loop, stop conditions, errors, handoff, memory, tracing, CLI, README example |
 | `tests/integration` | 4 | `RedisVectorStore` KNN, persistence across instances, clear, agent retrieval from Redis |
 | `tests/e2e` | 8 | `agentflow run` / `agentflow trace` as subprocesses: outputs, exit codes, JSONL traces, tool-failure recovery, Redis-backed RAG |
 
-Counts are from `pytest --collect-only` on this commit. CI runs all 74 on Python 3.11 and
+Counts are from `pytest --collect-only` on this commit. CI runs all 75 on Python 3.11 and
 3.12 with a `redis/redis-stack-server` service container (`AGENTFLOW_REQUIRE_REDIS=1` makes
 Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
