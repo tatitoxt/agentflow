@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any, get_type_hints, overload
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationError, create_model
 
 from .errors import ToolExecutionError, ToolNotFoundError, ToolValidationError
 from .types import ToolCall, ToolSpec
@@ -100,7 +100,7 @@ class Tool:
             annotation = hints.get(params[0].name)
             if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
                 self._model_param = params[0].name
-                if "extra" in annotation.model_config:
+                if "extra" in annotation.model_config or issubclass(annotation, RootModel):
                     return annotation
                 strict: type[BaseModel] = type(
                     annotation.__name__,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 from agentflow import Tool, ToolCall, ToolRegistry, tool
 from agentflow.errors import ToolExecutionError, ToolValidationError
@@ -177,3 +177,16 @@ def test_positional_only_parameters_are_supported() -> None:
         return x * factor
 
     assert scale({"x": 3, "factor": 3}) == 9
+
+
+class Labels(RootModel[dict[str, str]]):
+    pass
+
+
+def test_root_model_parameter_is_supported() -> None:
+    @tool
+    def tag(labels: Labels) -> int:
+        """Count labels."""
+        return len(labels.root)
+
+    assert tag({"env": "dev", "team": "core"}) == 2
