@@ -13,3 +13,4 @@ traces/
 *.jsonl
 !tests/fixtures/*.jsonl
 .env
+requirements-audit.txt

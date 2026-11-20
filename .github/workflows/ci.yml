@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.4.30"
+
+jobs:
+  lint:
+    name: Lint & type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen --extra dev --python 3.11
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen mypy
+
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    services:
+      redis:
+        image: redis/redis-stack-server:7.2.0-v13
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      AGENTFLOW_TEST_REDIS_URL: redis://localhost:6379/0
+      AGENTFLOW_REQUIRE_REDIS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen --extra dev --python ${{ matrix.python }}
+      - name: Unit and integration tests
+        run: uv run --frozen pytest tests/unit tests/integration
+      - name: End-to-end CLI tests
+        run: uv run --frozen pytest tests/e2e
+      - name: Demo smoke run
+        run: |
+          uv run --frozen agentflow run examples/ticket_triage.py --trace traces/triage.jsonl
+          uv run --frozen agentflow trace traces/triage.jsonl
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen --extra dev --python 3.11
+      - run: uv export --frozen --extra dev --no-hashes --no-emit-project > requirements-audit.txt
+      - run: uv run --frozen pip-audit -r requirements-audit.txt --no-deps --disable-pip --strict
