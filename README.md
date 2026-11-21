@@ -21,7 +21,7 @@ you test agents without API keys.
 ## What it does today
 
 - **Agent loop** (`agentflow.Agent`): alternates provider and tool calls until a final
-  answer, a stop condition (`stop_after_tool`, `max_tool_calls`, `token_budget` or your own,
+  answer, a stop condition (`stop_after_tool`, `max_tool_calls`, `token_budget`, `cost_budget` or your own,
   checked after every tool call and after each provider response) or `max_steps`. Answers cut off by the provider's token limit end with
   `stop_reason="truncated"`, not `final_answer`. Long runs can be capped with
   `history_max_messages`, which drops the oldest assistant+tool groups before a
@@ -47,7 +47,13 @@ you test agents without API keys.
   (OpenAI-compatible), with retry/backoff on 408/409/429/5xx, plus `FakeProvider` (scripted,
   deterministic). Real providers are opt-in via env vars.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
-  `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent)
+  `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent),
+  `PgVectorStore` (pgvector; `ensure_index` builds HNSW/IVFFlat, `configure_search` tunes recall).
+- **Cost accounting**: each provider response is priced via the table in
+  `agentflow.pricing` (longest-prefix model matching; `register_price` for custom
+  models) and accumulated into `RunResult.cost_usd`, the `provider_response` /
+  `run_end` trace events and the `cost_budget` stop condition — a run halts mid-step
+  once its estimated spend hits the cap. Unpriced models never accrue cost.
   or `PlainRedisVectorStore` (module-free Redis) or `PgVectorStore` (Postgres + pgvector).
   Retrieved snippets are injected into the agent context with their source. `PgVectorStore`
   searches exactly by default; `ensure_index()` adds an HNSW (or IVFFlat) cosine index and
@@ -226,8 +232,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 ## Roadmap
 
-- Async API.
-- Streaming responses and cost budgets (pricing data per provider).
+- Async API and streaming responses.
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
 - Automatic index hints for large corpora (HNSW/IVFFlat via `ensure_index` is manual today; RediSearch already KNN).
 

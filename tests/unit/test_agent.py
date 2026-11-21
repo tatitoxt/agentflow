@@ -433,3 +433,36 @@ def test_max_tool_workers_validation() -> None:
         pass
     else:  # pragma: no cover
         raise AssertionError("expected ValueError")
+
+
+def test_cost_budget_stops_run_and_reports_cost() -> None:
+    from agentflow import cost_budget, register_price
+
+    register_price("fake-1", 10.0, 20.0)
+    resp = ProviderResponse(
+        message=FakeProvider.tool_call("flaky", n=1),
+        usage=Usage(input_tokens=10_000, output_tokens=10_000),
+        model="fake-1",
+    )
+    # 10k in * $10/M + 10k out * $20/M = $0.30 per response.
+    provider = FakeProvider([resp, resp, resp])
+    result = Agent("a", provider, tools=[flaky], stop_conditions=[cost_budget(0.50)]).run("x")
+    assert result.stop_reason == "cost_budget" and result.steps == 2
+    assert result.cost_usd == pytest.approx(0.60)
+
+
+def test_cost_is_zero_for_unpriced_models() -> None:
+    provider = FakeProvider(["done"], model="no-such-model")
+    result = Agent("a", provider).run("x")
+    assert result.cost_usd == 0.0 and result.stop_reason == "final_answer"
+
+
+def test_run_result_reports_estimated_cost() -> None:
+    resp = ProviderResponse(
+        message=Message.assistant("done"),
+        usage=Usage(input_tokens=1_000_000, output_tokens=500_000),
+        model="gpt-4o-mini",
+    )
+    result = Agent("a", FakeProvider([resp])).run("x")
+    # $0.15/M in + $0.60/M out -> 0.15 + 0.30 = 0.45
+    assert result.cost_usd == pytest.approx(0.45)

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .errors import ProviderError
+from .pricing import estimate_cost
 from .providers.base import Provider
 from .tools import Tool, ToolRegistry, ToolResult
 from .tracing import Tracer
@@ -29,6 +30,7 @@ class RunState:
     last_response: ProviderResponse | None = None
     tool_results: list[ToolResult] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
+    cost_usd: float = 0.0
     step_start: int = 0
 
     @property
@@ -79,6 +81,22 @@ def token_budget(limit: int) -> StopCondition:
     return condition
 
 
+def cost_budget(limit_usd: float) -> StopCondition:
+    """Stop once the run has spent at least ``limit_usd`` USD (estimated).
+
+    Cost is estimated per provider response from the pricing table in
+    :mod:`agentflow.pricing` — models without a registered price never
+    accrue cost, so an unpriced model can't burn a budget silently.
+    Like :func:`token_budget` this fires right after the response, before
+    further tool calls or provider requests spend more.
+    """
+
+    def condition(state: RunState) -> str | None:
+        return "cost_budget" if state.cost_usd >= limit_usd else None
+
+    return condition
+
+
 @dataclass
 class RunResult:
     output: str
@@ -88,6 +106,7 @@ class RunResult:
     messages: list[Message]
     tool_results: list[ToolResult]
     usage: Usage
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -287,6 +306,11 @@ class Agent:
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
                 )
+                step_cost = estimate_cost(
+                    response.model or getattr(self.provider, "model", None), response.usage
+                )
+                if step_cost is not None:
+                    state.cost_usd += step_cost
                 message = response.message
                 messages.append(message)
                 emit(
@@ -296,6 +320,7 @@ class Agent:
                     tool_calls=[c.model_dump() for c in message.tool_calls],
                     stop_reason=response.stop_reason,
                     usage=response.usage.model_dump(),
+                    cost_usd=step_cost,
                 )
                 reason = next((r for c in self.stop_conditions if (r := c(state))), None)
                 if not message.tool_calls:
@@ -408,6 +433,7 @@ class Agent:
             output=_preview(output),
             steps=state.step,
             usage=usage.model_dump(),
+            cost_usd=state.cost_usd,
         )
         return RunResult(
             output=output,
@@ -417,6 +443,7 @@ class Agent:
             messages=messages,
             tool_results=state.tool_results,
             usage=usage,
+            cost_usd=state.cost_usd,
         )
 
     def as_tool(self, name: str | None = None, description: str | None = None) -> Tool:

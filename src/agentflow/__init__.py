@@ -5,6 +5,7 @@ from .agent import (
     RunResult,
     RunState,
     StopCondition,
+    cost_budget,
     max_tool_calls,
     stop_after_tool,
     token_budget,
@@ -18,6 +19,7 @@ from .errors import (
     ToolNotFoundError,
     ToolValidationError,
 )
+from .pricing import PRICES, estimate_cost, register_price
 from .tools import Tool, ToolRegistry, ToolResult, tool
 from .tracing import Event, JSONLSink, MemorySink, Tracer, read_jsonl
 from .types import Message, ProviderResponse, ToolCall, ToolSpec, Usage
@@ -33,7 +35,11 @@ __all__ = [
     "RunState",
     "StopCondition",
     "Tracer",
+    "PRICES",
+    "cost_budget",
+    "estimate_cost",
     "max_tool_calls",
+    "register_price",
     "read_jsonl",
     "stop_after_tool",
     "token_budget",
