@@ -27,6 +27,7 @@ class RunState:
     messages: list[Message]
     last_response: ProviderResponse | None = None
     tool_results: list[ToolResult] = field(default_factory=list)
+    usage: Usage = field(default_factory=Usage)
     step_start: int = 0
 
     @property
@@ -58,6 +59,21 @@ def max_tool_calls(limit: int) -> StopCondition:
 
     def condition(state: RunState) -> str | None:
         return "max_tool_calls" if len(state.tool_results) >= limit else None
+
+    return condition
+
+
+def token_budget(limit: int) -> StopCondition:
+    """Stop once the run has consumed ``limit`` total tokens (input + output).
+
+    Unlike tool-related conditions this is also evaluated right after each
+    provider response, so a spent budget halts the run before further tool
+    calls or provider requests burn more tokens.
+    """
+
+    def condition(state: RunState) -> str | None:
+        total = state.usage.input_tokens + state.usage.output_tokens
+        return "token_budget" if total >= limit else None
 
     return condition
 
@@ -190,6 +206,10 @@ class Agent:
                 state.last_response = response
                 usage.input_tokens += response.usage.input_tokens
                 usage.output_tokens += response.usage.output_tokens
+                state.usage = Usage(
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
                 message = response.message
                 messages.append(message)
                 emit(
@@ -200,15 +220,30 @@ class Agent:
                     stop_reason=response.stop_reason,
                     usage=response.usage.model_dump(),
                 )
+                reason = next((r for c in self.stop_conditions if (r := c(state))), None)
                 if not message.tool_calls:
                     truncated = response.stop_reason in TRUNCATION_STOP_REASONS
                     output, stop_reason = (
                         message.content,
-                        "truncated" if truncated else "final_answer",
+                        reason or ("truncated" if truncated else "final_answer"),
                     )
                     break
+                if reason:
+                    # A condition that fires on the response itself (e.g. a
+                    # spent budget) skips every pending tool call this step.
+                    output, stop_reason = message.content, reason
+                    for skipped in message.tool_calls:
+                        messages.append(
+                            Message.tool(
+                                skipped.id,
+                                skipped.name,
+                                f"SKIPPED: run stopped ({reason})",
+                                is_error=True,
+                            )
+                        )
+                    break
                 state.step_start = len(state.tool_results)
-                reason: str | None = None
+                reason = None
                 for index, call in enumerate(message.tool_calls):
                     emit("tool_call", step, id=call.id, name=call.name, arguments=call.arguments)
                     result = self.tools.execute(call)

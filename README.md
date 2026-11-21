@@ -21,8 +21,8 @@ you test agents without API keys.
 ## What it does today
 
 - **Agent loop** (`agentflow.Agent`): alternates provider and tool calls until a final
-  answer, a stop condition (`stop_after_tool`, `max_tool_calls` or your own, checked after
-  every tool call) or `max_steps`. Answers cut off by the provider's token limit end with
+  answer, a stop condition (`stop_after_tool`, `max_tool_calls`, `token_budget` or your own,
+  checked after every tool call and after each provider response) or `max_steps`. Answers cut off by the provider's token limit end with
   `stop_reason="truncated"`, not `final_answer`.
 - **Tool registry** (`@tool`): JSON schema generated from type hints, `Annotated[..., Field()]`,
   Google-style docstrings or a single pydantic model parameter; arguments are validated
@@ -199,7 +199,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 ## Roadmap
 
 - Async API and parallel tool execution.
-- Streaming responses and token/cost budgets as stop conditions.
+- Streaming responses and cost budgets (pricing data per provider).
 - Context-window management (summarizing or truncating long histories).
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
 - More stores (pgvector) and a plain-Redis fallback store.

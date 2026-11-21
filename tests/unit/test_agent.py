@@ -10,6 +10,7 @@ from agentflow import (
     Usage,
     max_tool_calls,
     stop_after_tool,
+    token_budget,
     tool,
 )
 from agentflow.errors import ProviderError, ToolExecutionError
@@ -247,3 +248,55 @@ def test_handoff_child_with_own_tracer_logs_into_parent_trace() -> None:
     )
     parent.run("x")
     assert {e.agent for e in parent_tracer.events if e.type == "run_end"} == {"child", "parent"}
+
+
+def test_token_budget_stops_before_pending_tool_calls() -> None:
+    provider = FakeProvider(
+        [
+            ProviderResponse(
+                message=FakeProvider.tool_call("flaky", n=1),
+                usage=Usage(input_tokens=100, output_tokens=5),
+            ),
+            last_tool_content,
+        ]
+    )
+    agent = Agent("a", provider, tools=[flaky], stop_conditions=[token_budget(50)])
+    result = agent.run("x")
+    assert result.stop_reason == "token_budget"
+    assert result.steps == 1 and len(provider.calls) == 1
+    assert result.tool_results == []
+    skipped = result.messages[-1]
+    assert skipped.role == "tool" and skipped.is_error and "token_budget" in skipped.content
+
+
+def test_token_budget_applies_to_final_answer_response() -> None:
+    provider = FakeProvider(
+        [
+            ProviderResponse(
+                message=FakeProvider.tool_call("flaky", n=1),
+                usage=Usage(input_tokens=10, output_tokens=2),
+            ),
+            ProviderResponse(
+                message=Message.assistant("done"),
+                usage=Usage(input_tokens=60, output_tokens=5),
+            ),
+        ]
+    )
+    agent = Agent("a", provider, tools=[flaky], stop_conditions=[token_budget(50)])
+    result = agent.run("x")
+    assert (result.stop_reason, result.output) == ("token_budget", "done")
+
+
+def test_token_budget_allows_runs_under_the_limit() -> None:
+    provider = FakeProvider(
+        [
+            ProviderResponse(
+                message=FakeProvider.tool_call("flaky", n=1),
+                usage=Usage(input_tokens=10, output_tokens=2),
+            ),
+            last_tool_content,
+        ]
+    )
+    agent = Agent("a", provider, tools=[flaky], stop_conditions=[token_budget(1000)])
+    result = agent.run("x")
+    assert result.stop_reason == "final_answer" and result.output == "Answer: 1"

@@ -1,6 +1,14 @@
 """AgentFlow: a lightweight, typed framework for tool-calling AI agents."""
 
-from .agent import Agent, RunResult, RunState, StopCondition, max_tool_calls, stop_after_tool
+from .agent import (
+    Agent,
+    RunResult,
+    RunState,
+    StopCondition,
+    max_tool_calls,
+    stop_after_tool,
+    token_budget,
+)
 from .errors import (
     AgentFlowError,
     ConfigurationError,
@@ -28,6 +36,7 @@ __all__ = [
     "max_tool_calls",
     "read_jsonl",
     "stop_after_tool",
+    "token_budget",
     "AgentFlowError",
     "ConfigurationError",
     "Message",
