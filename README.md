@@ -35,6 +35,10 @@ you test agents without API keys.
   (extra fields rejected) before the function runs.
 - **Tool error handling**: validation errors, exceptions and unknown tools are returned to the
   model as error results so it can recover; `raise_on_tool_error=True` aborts instead.
+- **Parallel tool calls**: with `max_tool_workers=N`, all calls requested in a step run
+  concurrently on a thread pool; results and messages stay in call order. Stop conditions
+  still apply — a mid-batch stop records the already-executed calls' real results instead
+  of marking them skipped.
 - **Tracing**: typed events (`run_start`, `memory_retrieval`, `provider_request`,
   `provider_response`, `tool_call`, `tool_result`, `tool_error`, `handoff_start`,
   `handoff_end`, `run_end`, `run_error`) streamed to sinks; JSONL export and reload.
@@ -218,7 +222,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 ## Roadmap
 
-- Async API and parallel tool execution.
+- Async API.
 - Streaming responses and cost budgets (pricing data per provider).
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
 - Approximate indexes for large corpora (pgvector exact search today; RediSearch already KNN).

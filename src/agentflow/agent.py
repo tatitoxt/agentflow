@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import uuid
 from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -161,6 +162,7 @@ class Agent:
         max_steps: int = 8,
         history_max_messages: int | None = None,
         summarizer: Callable[[list[Message]], str] | None = None,
+        max_tool_workers: int | None = None,
         stop_conditions: Sequence[StopCondition] = (),
         raise_on_tool_error: bool = False,
         tracer: Tracer | None = None,
@@ -179,6 +181,9 @@ class Agent:
             raise ValueError("history_max_messages must be >= 4")
         self.history_max_messages = history_max_messages
         self.summarizer = summarizer
+        if max_tool_workers is not None and max_tool_workers < 1:
+            raise ValueError("max_tool_workers must be >= 1")
+        self.max_tool_workers = max_tool_workers
         self.stop_conditions = list(stop_conditions)
         self.raise_on_tool_error = raise_on_tool_error
         self.tracer = tracer
@@ -316,9 +321,32 @@ class Agent:
                     break
                 state.step_start = len(state.tool_results)
                 reason = None
-                for index, call in enumerate(message.tool_calls):
-                    emit("tool_call", step, id=call.id, name=call.name, arguments=call.arguments)
-                    result = self.tools.execute(call)
+                calls = message.tool_calls
+                executed: list[ToolResult | None]
+                if self.max_tool_workers and len(calls) > 1:
+                    for c in calls:
+                        emit(
+                            "tool_call",
+                            step,
+                            id=c.id,
+                            name=c.name,
+                            arguments=c.arguments,
+                        )
+                    with ThreadPoolExecutor(max_workers=self.max_tool_workers) as pool:
+                        executed = list(pool.map(self.tools.execute, calls))
+                else:
+                    executed = [None] * len(calls)
+                for index, call in enumerate(calls):
+                    result = executed[index]
+                    if result is None:
+                        emit(
+                            "tool_call",
+                            step,
+                            id=call.id,
+                            name=call.name,
+                            arguments=call.arguments,
+                        )
+                        result = self.tools.execute(call)
                     state.tool_results.append(result)
                     messages.append(
                         Message.tool(call.id, call.name, result.content, is_error=result.is_error)
@@ -346,15 +374,28 @@ class Agent:
                     reason = next((r for c in self.stop_conditions if (r := c(state))), None)
                     if reason:
                         output, stop_reason = result.content, reason
-                        for skipped in message.tool_calls[index + 1 :]:
-                            messages.append(
-                                Message.tool(
-                                    skipped.id,
-                                    skipped.name,
-                                    f"SKIPPED: run stopped ({reason})",
-                                    is_error=True,
+                        for j, skipped in enumerate(calls[index + 1 :], start=index + 1):
+                            ran = executed[j]
+                            if ran is not None:
+                                # parallel mode: the call already ran, record its real result
+                                state.tool_results.append(ran)
+                                messages.append(
+                                    Message.tool(
+                                        skipped.id,
+                                        skipped.name,
+                                        ran.content,
+                                        is_error=ran.is_error,
+                                    )
                                 )
-                            )
+                            else:
+                                messages.append(
+                                    Message.tool(
+                                        skipped.id,
+                                        skipped.name,
+                                        f"SKIPPED: run stopped ({reason})",
+                                        is_error=True,
+                                    )
+                                )
                         break
                 if reason:
                     break

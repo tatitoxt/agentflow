@@ -389,3 +389,47 @@ def test_summarizer_error_falls_back_to_plain_trimming() -> None:
     assert all("summarized" not in m.content for m in sent)
     assert all(len(call[0]) <= 5 for call in provider.calls)
     assert any(e.type == "history_summarize_error" for e in tracer.events)
+
+
+def test_parallel_tool_calls_run_concurrently_and_keep_order() -> None:
+    import time
+
+    def slow(n: int) -> str:
+        time.sleep(0.15)
+        return f"s{n}"
+
+    def fast(n: int) -> str:
+        return f"f{n}"
+
+    provider = FakeProvider(
+        [
+            Message.assistant(
+                tool_calls=[
+                    ToolCall(id="a", name="slow", arguments={"n": 1}),
+                    ToolCall(id="b", name="slow", arguments={"n": 2}),
+                    ToolCall(id="c", name="fast", arguments={"n": 3}),
+                ]
+            ),
+            "done",
+        ]
+    )
+    t0 = time.monotonic()
+    result = Agent(
+        "a", provider, tools=[slow, fast], max_tool_workers=3, max_steps=2
+    ).run("x")
+    elapsed = time.monotonic() - t0
+    assert result.stop_reason == "final_answer"
+    assert [r.content for r in result.tool_results] == ["s1", "s2", "f3"]
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert [m.tool_call_id for m in tool_msgs] == ["a", "b", "c"]
+    assert elapsed < 0.5, f"calls did not overlap (took {elapsed:.2f}s)"
+
+
+def test_max_tool_workers_validation() -> None:
+    provider = FakeProvider(["x"])
+    try:
+        Agent("a", provider, max_tool_workers=0)
+    except ValueError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
