@@ -41,7 +41,7 @@ you test agents without API keys.
   deterministic). Real providers are opt-in via env vars.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
   `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent)
-  or `PlainRedisVectorStore` (module-free Redis, persistent).
+  or `PlainRedisVectorStore` (module-free Redis) or `PgVectorStore` (Postgres + pgvector).
   Retrieved snippets are injected into the agent context with their source.
 - **Multi-agent handoff**: `agent.as_tool()` exposes an agent as a tool; the child run shares
   the parent's trace and records `parent_run_id`.
@@ -100,6 +100,16 @@ docker compose up -d --wait redis
 AGENTFLOW_REDIS_URL=redis://localhost:6379/0 \
   uv run agentflow run examples/research_assistant.py -i "What is the API rate limit?"
 ```
+
+### Postgres-backed memory
+
+```bash
+docker compose up -d --wait postgres
+uv pip install -e '.[postgres]'
+```
+
+Then point `PgVectorStore(dim=…, url="postgresql://postgres:agentflow@localhost:5432/agentflow")`
+at the container — tables and the `vector` extension are created on first use.
 
 ## Library usage
 
@@ -209,7 +219,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 - Streaming responses and cost budgets (pricing data per provider).
 - Context summarization (only trimming via `history_max_messages` exists today).
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
-- More stores (pgvector).
+- Approximate indexes for large corpora (pgvector exact search today; RediSearch already KNN).
 
 ## License
 

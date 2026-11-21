@@ -244,5 +244,76 @@ class PlainRedisVectorStore:
             self.client.delete(self._ids_key)
 
 
+class PgVectorStore:
+    """Persistent store backed by Postgres + pgvector.
+
+    One table per ``index_name`` (``agentflow_<index_name>``): id, text,
+    metadata (jsonb) and a ``vector(dim)`` column. Search orders by cosine
+    distance (``<=>``); scores are ``1 - distance``. The table is created on
+    first use with exact search — add an IVFFlat/HNSW index later for large
+    corpora.
+    """
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        url: str = "postgresql://localhost:5432/agentflow",
+        index_name: str = "agentflow",
+        client: Any | None = None,
+    ) -> None:
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError("PgVectorStore needs `pip install agentflow[postgres]`") from exc
+        if not index_name.isidentifier():
+            raise ValueError(f"index_name must be a valid SQL identifier, got {index_name!r}")
+        self.dim = dim
+        self.index_name = index_name
+        self.table = f"agentflow_{index_name}"
+        self.conn = client or psycopg.connect(url, autocommit=True)
+        self.conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        self.conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{self.table}" ('
+            "id TEXT PRIMARY KEY, text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}',"
+            f" embedding vector({int(dim)}) NOT NULL)"
+        )
+
+    def _pack(self, vector: Sequence[float]) -> str:
+        if len(vector) != self.dim:
+            raise ValueError(f"expected vector of dim {self.dim}, got {len(vector)}")
+        return "[" + ",".join(repr(v) for v in vector) + "]"
+
+    def upsert(self, records: Sequence[Record]) -> None:
+        for r in records:
+            self.conn.execute(
+                f'INSERT INTO "{self.table}" (id, text, metadata, embedding)'
+                " VALUES (%s,%s,%s,%s::vector)"
+                " ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text,"
+                " metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding",
+                (r.id, r.text, json.dumps(r.metadata, sort_keys=True), self._pack(r.vector)),
+            )
+
+    def search(self, vector: Sequence[float], k: int) -> list[tuple[Record, float]]:
+        rows = self.conn.execute(
+            f'SELECT id, text, metadata, embedding <=> %s::vector AS distance FROM "{self.table}"'
+            " ORDER BY distance, id LIMIT %s",
+            (self._pack(vector), int(k)),
+        ).fetchall()
+        return [
+            (
+                Record(id=row[0], text=row[1], vector=[], metadata=dict(row[2] or {})),
+                1.0 - float(row[3]),
+            )
+            for row in rows
+        ]
+
+    def count(self) -> int:
+        return int(self.conn.execute(f'SELECT count(*) FROM "{self.table}"').fetchone()[0])
+
+    def clear(self) -> None:
+        self.conn.execute(f'DELETE FROM "{self.table}"')
+
+
 def _text(value: Any) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else str(value)

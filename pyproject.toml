@@ -31,6 +31,9 @@ dev = [
   "redis==5.0.8",
   "ruff==0.7.4",
 ]
+postgres = [
+    "psycopg[binary]>=3.2,<4",
+]
 
 [project.scripts]
 agentflow = "agentflow.cli:main"
@@ -53,17 +56,23 @@ files = ["src", "examples"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["redis.*"]
+module = ["redis.*", "psycopg.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
   "redis: requires a running Redis Stack (set AGENTFLOW_TEST_REDIS_URL)",
+  "pgvector: requires Postgres + pgvector (set AGENTFLOW_TEST_PG_URL)",
   "e2e: drives the agentflow CLI as a subprocess",
 ]
 addopts = "-ra"
 
 [tool.uv]
 # Pin runtime dependencies to mature, widely used releases in uv.lock.
-constraint-dependencies = ["httpx==0.28.1", "pydantic==2.10.6", "redis==5.0.8"]
+constraint-dependencies = ["httpx==0.28.1", "pydantic==2.10.6", "redis==5.0.8", "psycopg[binary]==3.2.12"]
+
+[dependency-groups]
+dev = [
+    "psycopg[binary]==3.2.12",
+]
