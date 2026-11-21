@@ -49,7 +49,9 @@ you test agents without API keys.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
   `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent)
   or `PlainRedisVectorStore` (module-free Redis) or `PgVectorStore` (Postgres + pgvector).
-  Retrieved snippets are injected into the agent context with their source.
+  Retrieved snippets are injected into the agent context with their source. `PgVectorStore`
+  searches exactly by default; `ensure_index()` adds an HNSW (or IVFFlat) cosine index and
+  `configure_search()` tunes recall (`hnsw.ef_search` / `ivfflat.probes`) for large corpora.
 - **Multi-agent handoff**: `agent.as_tool()` exposes an agent as a tool; the child run shares
   the parent's trace and records `parent_run_id`.
 - **CLI**: `agentflow run examples/<name>.py` and `agentflow trace <file.jsonl>`.
@@ -115,7 +117,7 @@ docker compose up -d --wait postgres
 uv pip install -e '.[postgres]'
 ```
 
-Then point `PgVectorStore(dim=…, url="postgresql://postgres:agentflow@localhost:5432/agentflow")`
+Then point `PgVectorStore(dim=…, url="postgresql://postgres:agentflow@localhost:55433/agentflow")`
 at the container — tables and the `vector` extension are created on first use.
 
 ## Library usage
@@ -217,8 +219,9 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
   requires a new index name.
 - Synchronous API only; tools run concurrently only within a step
   (`max_tool_workers`) and only when the model requests more than one.
-- `PlainRedisVectorStore` scans records in Python — fine for small memories; use
-  `RedisVectorStore` (RediSearch KNN) for thousands of records.
+- `PlainRedisVectorStore` scans records in Python and `PgVectorStore` scans exactly unless
+  `ensure_index()` ran — fine for small memories; use `RedisVectorStore` (RediSearch KNN)
+  or an approximate index for thousands of records.
 - No benchmarks were run; no performance claims are made.
 
 ## Roadmap
@@ -226,7 +229,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 - Async API.
 - Streaming responses and cost budgets (pricing data per provider).
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
-- Approximate indexes for large corpora (pgvector exact search today; RediSearch already KNN).
+- Automatic index hints for large corpora (HNSW/IVFFlat via `ensure_index` is manual today; RediSearch already KNN).
 
 ## License
 

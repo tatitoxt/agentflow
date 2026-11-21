@@ -42,3 +42,30 @@ def test_pgvector_clear_and_dimension_check(pg_url: str, pg_index: str) -> None:
     store.clear()
     assert store.count() == 0
     assert store.search([1.0, 0.0, 0.0, 0.0], k=3) == []
+
+
+def test_pgvector_ensure_index_and_configure_search(pg_url: str, pg_index: str) -> None:
+    store = PgVectorStore(dim=4, url=pg_url, index_name=pg_index)
+    store.upsert(
+        [
+            Record(id=str(i), text=f"doc {i}", vector=[float(i % 3), 0.0, 0.0, 1.0])
+            for i in range(10)
+        ]
+    )
+    name = store.ensure_index()  # hnsw default
+    assert name == f"{store.table}_hnsw_idx"
+    assert store.ensure_index() == name  # idempotent
+    assert store.ensure_index("ivfflat", lists=5) == f"{store.table}_ivfflat_idx"
+    with pytest.raises(ValueError, match="method must be"):
+        store.ensure_index("brute")
+
+    store.configure_search(ef_search=40)
+    store.configure_search(probes=3)
+    hits = store.search([1.0, 0.0, 0.0, 1.0], k=3)
+    assert len(hits) == 3
+
+    # the index exists and the planner can use it
+    rows = store.conn.execute(
+        "SELECT indexname FROM pg_indexes WHERE tablename = %s", (store.table,)
+    ).fetchall()
+    assert {f"{store.table}_hnsw_idx", f"{store.table}_ivfflat_idx"} <= {r[0] for r in rows}

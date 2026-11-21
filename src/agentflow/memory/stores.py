@@ -249,9 +249,9 @@ class PgVectorStore:
 
     One table per ``index_name`` (``agentflow_<index_name>``): id, text,
     metadata (jsonb) and a ``vector(dim)`` column. Search orders by cosine
-    distance (``<=>``); scores are ``1 - distance``. The table is created on
-    first use with exact search — add an IVFFlat/HNSW index later for large
-    corpora.
+    distance (``<=>``); scores are ``1 - distance``. Search is exact until
+    ``ensure_index()`` builds an HNSW/IVFFlat index for large corpora, with
+    recall tuned via ``configure_search()``.
     """
 
     def __init__(
@@ -313,6 +313,48 @@ class PgVectorStore:
 
     def clear(self) -> None:
         self.conn.execute(f'DELETE FROM "{self.table}"')
+
+    def ensure_index(
+        self,
+        method: str = "hnsw",
+        *,
+        m: int = 16,
+        ef_construction: int = 64,
+        lists: int = 100,
+    ) -> str:
+        """Create an approximate index over ``embedding`` (cosine ops).
+
+        ``method="hnsw"`` (pgvector >= 0.5) builds an HNSW graph index;
+        ``method="ivfflat"`` builds an IVFFlat one — useful on older pgvector
+        or when a small, fast ``lists`` scan is preferred. Idempotent
+        (``CREATE INDEX IF NOT EXISTS``); returns the index name.
+        """
+        if method not in {"hnsw", "ivfflat"}:
+            raise ValueError(f"method must be 'hnsw' or 'ivfflat', got {method!r}")
+        name = f"{self.table}_{method}_idx"
+        if method == "hnsw":
+            options = f"m = {int(m)}, ef_construction = {int(ef_construction)}"
+        else:
+            options = f"lists = {int(lists)}"
+        self.conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "{name}" ON "{self.table}"'
+            f" USING {method} (embedding vector_cosine_ops) WITH ({options})"
+        )
+        return name
+
+    def configure_search(
+        self, *, probes: int | None = None, ef_search: int | None = None
+    ) -> None:
+        """Tune ANN recall for this connection's queries.
+
+        ``probes`` sets ``ivfflat.probes`` (IVFFlat index); ``ef_search`` sets
+        ``hnsw.ef_search`` (HNSW index). Higher values = better recall, slower
+        queries. Applies to the whole session until changed.
+        """
+        if probes is not None:
+            self.conn.execute(f"SET ivfflat.probes = {int(probes)}")
+        if ef_search is not None:
+            self.conn.execute(f"SET hnsw.ef_search = {int(ef_search)}")
 
 
 def _text(value: Any) -> str:
