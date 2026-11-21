@@ -119,7 +119,7 @@ uv run agentflow run examples/ticket_triage.py \
 ```
 
 Useful flags: `--json` (machine-readable summary), `--max-steps N`, `--provider
-fake|openai|anthropic|groq`. Exit codes: `0` finished, `1` error, `3` stopped early
+fake|openai|anthropic|groq|replay`. Exit codes: `0` finished, `1` error, `3` stopped early
 (for example `max_steps` or `truncated`).
 
 ### Using a real model (opt-in)
