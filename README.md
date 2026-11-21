@@ -64,6 +64,11 @@ you test agents without API keys.
   `OpenAIProvider` (Chat Completions), `AnthropicProvider` (Messages API), `GroqProvider`
   (OpenAI-compatible), with retry/backoff on 408/409/429/5xx, plus `FakeProvider` (scripted,
   deterministic). Real providers are opt-in via env vars.
+- **Record/replay fixtures**: `AGENTFLOW_RECORD_FILE=path.jsonl` wraps any provider
+  and appends every exchange as JSONL; `AGENTFLOW_PROVIDER=replay` (with
+  `AGENTFLOW_REPLAY_FILE`) serves recorded responses offline and raises when
+  the request flow diverges — regression tests against real model output
+  without API keys.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
   `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent),
   `PgVectorStore` (pgvector; `ensure_index`/`auto_index` build HNSW/IVFFlat, `configure_search` tunes recall).
@@ -253,7 +258,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 ## Roadmap
 
-- Record/replay fixtures for provider responses (regression tests on real model output).
+- A baseline of recorded fixtures committed under `tests/fixtures/` replayed in CI.
 
 ## License
 
