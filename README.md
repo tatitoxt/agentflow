@@ -256,10 +256,6 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
   or an approximate index for thousands of records.
 - No benchmarks were run; no performance claims are made.
 
-## Roadmap
-
-- A baseline of recorded fixtures committed under `tests/fixtures/` replayed in CI.
-
 ## License
 
 [MIT](LICENSE) © Fausto Pastura
