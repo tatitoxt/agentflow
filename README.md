@@ -26,7 +26,10 @@ you test agents without API keys.
   `stop_reason="truncated"`, not `final_answer`. Long runs can be capped with
   `history_max_messages`, which drops the oldest assistant+tool groups before a
   provider request (a `history_trimmed` trace event records each trim); the head —
-  instructions, retrieved context and the user's input — is always kept.
+  instructions, retrieved context and the user's input — is always kept. With a
+  `summarizer` callable the dropped messages are condensed into a persistent
+  system note instead of being lost: each trim emits `history_summarized` and a
+  summarizer failure falls back to plain trimming (`history_summarize_error`).
 - **Tool registry** (`@tool`): JSON schema generated from type hints, `Annotated[..., Field()]`,
   Google-style docstrings or a single pydantic model parameter; arguments are validated
   (extra fields rejected) before the function runs.
@@ -217,7 +220,6 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 - Async API and parallel tool execution.
 - Streaming responses and cost budgets (pricing data per provider).
-- Context summarization (only trimming via `history_max_messages` exists today).
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
 - Approximate indexes for large corpora (pgvector exact search today; RediSearch already KNN).
 

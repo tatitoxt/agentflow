@@ -106,13 +106,15 @@ def _new_run_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _trim_history(messages: list[Message], limit: int) -> list[Message]:
+def _trim_history(
+    messages: list[Message], limit: int
+) -> tuple[list[Message], list[Message]]:
     """Keep at most ``limit`` messages: the head (system/context/user) plus the
     newest assistant+tool groups, so a kept tool result always follows the
-    assistant message that requested it.
+    assistant message that requested it. Returns ``(kept, dropped)``.
     """
     if len(messages) <= limit:
-        return messages
+        return messages, []
     first_assistant = next(
         (i for i, m in enumerate(messages) if m.role == "assistant"), len(messages)
     )
@@ -123,9 +125,21 @@ def _trim_history(messages: list[Message], limit: int) -> list[Message]:
             groups.append([m])
         else:
             groups[-1].append(m)
+    dropped: list[Message] = []
     while groups and len(head) + sum(len(g) for g in groups) > limit:
-        groups.pop(0)
-    return head + [m for g in groups for m in g]
+        dropped.extend(groups.pop(0))
+    return head + [m for g in groups for m in g], dropped
+
+
+def _insert_summary(messages: list[Message], summary: str) -> list[Message]:
+    """Insert a summary system message after the head (before the first
+    assistant message), where it survives future trims.
+    """
+    first_assistant = next(
+        (i for i, m in enumerate(messages) if m.role == "assistant"), len(messages)
+    )
+    note = Message.system(f"Earlier context (summarized):\n{summary}")
+    return messages[:first_assistant] + [note] + messages[first_assistant:]
 
 
 def _preview(text: str, limit: int = 500) -> str:
@@ -146,6 +160,7 @@ class Agent:
         memory_k: int = 3,
         max_steps: int = 8,
         history_max_messages: int | None = None,
+        summarizer: Callable[[list[Message]], str] | None = None,
         stop_conditions: Sequence[StopCondition] = (),
         raise_on_tool_error: bool = False,
         tracer: Tracer | None = None,
@@ -163,6 +178,7 @@ class Agent:
         if history_max_messages is not None and history_max_messages < 4:
             raise ValueError("history_max_messages must be >= 4")
         self.history_max_messages = history_max_messages
+        self.summarizer = summarizer
         self.stop_conditions = list(stop_conditions)
         self.raise_on_tool_error = raise_on_tool_error
         self.tracer = tracer
@@ -224,10 +240,33 @@ class Agent:
             for step in range(1, self.max_steps + 1):
                 state.step = step
                 if self.history_max_messages is not None:
-                    trimmed = _trim_history(messages, self.history_max_messages)
-                    dropped = len(messages) - len(trimmed)
+                    trimmed, dropped = _trim_history(messages, self.history_max_messages)
                     if dropped:
-                        emit("history_trimmed", step, dropped=dropped, kept=len(trimmed))
+                        if self.summarizer is not None:
+                            try:
+                                summary = self.summarizer(dropped)
+                            except Exception as exc:
+                                emit(
+                                    "history_summarize_error",
+                                    step,
+                                    error=type(exc).__name__,
+                                    message=str(exc),
+                                )
+                                summary = None
+                            if summary:
+                                emit(
+                                    "history_summarized",
+                                    step,
+                                    dropped=len(dropped),
+                                    summary_chars=len(summary),
+                                )
+                                trimmed = _insert_summary(trimmed, summary)
+                        emit(
+                            "history_trimmed",
+                            step,
+                            dropped=len(dropped),
+                            kept=len(trimmed),
+                        )
                         messages[:] = trimmed
                         state.messages = messages
                 emit("provider_request", step, provider=self.provider.name, messages=len(messages))

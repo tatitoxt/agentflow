@@ -16,6 +16,8 @@ EventType = Literal[
     "provider_request",
     "provider_response",
     "history_trimmed",
+    "history_summarized",
+    "history_summarize_error",
     "tool_call",
     "tool_result",
     "tool_error",

@@ -332,7 +332,60 @@ def test_history_max_messages_never_orphans_tool_results() -> None:
         Message.tool("2", "b", "r2"),
         Message.assistant("final"),
     ]
-    trimmed = _trim_history(messages, 5)
+    trimmed, dropped = _trim_history(messages, 5)
     assert [m.role for m in trimmed] == ["system", "user", "assistant", "tool", "assistant"]
     assert trimmed[2].tool_calls[0].id == "2"
     assert trimmed[-1].content == "final"
+    assert [m.role for m in dropped] == ["assistant", "tool"]
+
+
+def test_summarizer_replaces_dropped_messages_with_a_system_note() -> None:
+    provider = FakeProvider(lambda messages, tools: FakeProvider.tool_call("flaky", n=1))
+    tracer = Tracer()
+    captured: list[list[Message]] = []
+
+    def summarize(dropped: list[Message]) -> str:
+        captured.append(list(dropped))
+        return "dropped " + str(len(dropped)) + " messages about tools"
+
+    agent = Agent(
+        "a",
+        provider,
+        tools=[flaky],
+        max_steps=4,
+        history_max_messages=5,
+        summarizer=summarize,
+        tracer=tracer,
+    )
+    result = agent.run("x")
+    assert captured, "summarizer was never called"
+    assert all(m.role in {"assistant", "tool"} for batch in captured for m in batch)
+    sent = provider.calls[-1][0]
+    summaries = [m for m in sent if m.role == "system" and "summarized" in m.content]
+    assert summaries, "no summary message reached the provider"
+    assert "dropped" in summaries[-1].content
+    assert any(e.type == "history_summarized" for e in tracer.events)
+
+
+def test_summarizer_error_falls_back_to_plain_trimming() -> None:
+    provider = FakeProvider(lambda messages, tools: FakeProvider.tool_call("flaky", n=1))
+    tracer = Tracer()
+
+    def boom(dropped: list[Message]) -> str:
+        raise RuntimeError("summarizer exploded")
+
+    agent = Agent(
+        "a",
+        provider,
+        tools=[flaky],
+        max_steps=4,
+        history_max_messages=5,
+        summarizer=boom,
+        tracer=tracer,
+    )
+    result = agent.run("x")
+    assert result.steps == 4
+    sent = provider.calls[-1][0]
+    assert all("summarized" not in m.content for m in sent)
+    assert all(len(call[0]) <= 5 for call in provider.calls)
+    assert any(e.type == "history_summarize_error" for e in tracer.events)
