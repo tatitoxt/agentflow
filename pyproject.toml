@@ -65,6 +65,7 @@ markers = [
   "redis: requires a running Redis Stack (set AGENTFLOW_TEST_REDIS_URL)",
   "pgvector: requires Postgres + pgvector (set AGENTFLOW_TEST_PG_URL)",
   "e2e: drives the agentflow CLI as a subprocess",
+  "live: opt-in smoke tests against real provider APIs (needs API keys)",
 ]
 addopts = "-ra"
 

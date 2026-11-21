@@ -1,0 +1,19 @@
+name: live-smoke
+
+# Manual only: real provider calls cost money and need secrets. Run from
+# Actions → live-smoke → Run workflow. Nothing here gates CI.
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - name: Provider smoke tests (skipped without keys)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run pytest -m live -v
