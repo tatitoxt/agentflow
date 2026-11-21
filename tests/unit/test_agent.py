@@ -300,3 +300,39 @@ def test_token_budget_allows_runs_under_the_limit() -> None:
     agent = Agent("a", provider, tools=[flaky], stop_conditions=[token_budget(1000)])
     result = agent.run("x")
     assert result.stop_reason == "final_answer" and result.output == "Answer: 1"
+
+
+def test_history_max_messages_keeps_head_and_drops_whole_groups() -> None:
+    provider = FakeProvider(lambda messages, tools: FakeProvider.tool_call("flaky", n=1))
+    tracer = Tracer()
+    agent = Agent(
+        "a", provider, tools=[flaky], max_steps=4, history_max_messages=5, tracer=tracer
+    )
+    result = agent.run("x")
+    assert result.steps == 4
+    seen = [len(call[0]) for call in provider.calls]
+    assert all(n <= 5 for n in seen)
+    sent = provider.calls[-1][0]
+    assert sent[0].role == "user"  # head (system absent here) preserved
+    for i, m in enumerate(sent):
+        if m.role == "tool":
+            assert any(c.role == "assistant" and c.tool_calls for c in sent[:i])
+    assert any(e.type == "history_trimmed" for e in tracer.events)
+
+
+def test_history_max_messages_never_orphans_tool_results() -> None:
+    from agentflow.agent import _trim_history
+
+    messages = [
+        Message.system("s"),
+        Message.user("u"),
+        Message.assistant(tool_calls=[ToolCall(id="1", name="a", arguments={})]),
+        Message.tool("1", "a", "r1"),
+        Message.assistant(tool_calls=[ToolCall(id="2", name="b", arguments={})]),
+        Message.tool("2", "b", "r2"),
+        Message.assistant("final"),
+    ]
+    trimmed = _trim_history(messages, 5)
+    assert [m.role for m in trimmed] == ["system", "user", "assistant", "tool", "assistant"]
+    assert trimmed[2].tool_calls[0].id == "2"
+    assert trimmed[-1].content == "final"

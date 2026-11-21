@@ -106,6 +106,28 @@ def _new_run_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _trim_history(messages: list[Message], limit: int) -> list[Message]:
+    """Keep at most ``limit`` messages: the head (system/context/user) plus the
+    newest assistant+tool groups, so a kept tool result always follows the
+    assistant message that requested it.
+    """
+    if len(messages) <= limit:
+        return messages
+    first_assistant = next(
+        (i for i, m in enumerate(messages) if m.role == "assistant"), len(messages)
+    )
+    head, rest = messages[:first_assistant], messages[first_assistant:]
+    groups: list[list[Message]] = []
+    for m in rest:
+        if m.role == "assistant" or not groups:
+            groups.append([m])
+        else:
+            groups[-1].append(m)
+    while groups and len(head) + sum(len(g) for g in groups) > limit:
+        groups.pop(0)
+    return head + [m for g in groups for m in g]
+
+
 def _preview(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
@@ -123,6 +145,7 @@ class Agent:
         memory: VectorMemory | None = None,
         memory_k: int = 3,
         max_steps: int = 8,
+        history_max_messages: int | None = None,
         stop_conditions: Sequence[StopCondition] = (),
         raise_on_tool_error: bool = False,
         tracer: Tracer | None = None,
@@ -137,6 +160,9 @@ class Agent:
         self.memory = memory
         self.memory_k = memory_k
         self.max_steps = max_steps
+        if history_max_messages is not None and history_max_messages < 4:
+            raise ValueError("history_max_messages must be >= 4")
+        self.history_max_messages = history_max_messages
         self.stop_conditions = list(stop_conditions)
         self.raise_on_tool_error = raise_on_tool_error
         self.tracer = tracer
@@ -197,6 +223,13 @@ class Agent:
         try:
             for step in range(1, self.max_steps + 1):
                 state.step = step
+                if self.history_max_messages is not None:
+                    trimmed = _trim_history(messages, self.history_max_messages)
+                    dropped = len(messages) - len(trimmed)
+                    if dropped:
+                        emit("history_trimmed", step, dropped=dropped, kept=len(trimmed))
+                        messages[:] = trimmed
+                        state.messages = messages
                 emit("provider_request", step, provider=self.provider.name, messages=len(messages))
                 try:
                     response = self.provider.complete(list(messages), specs)

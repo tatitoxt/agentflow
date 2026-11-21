@@ -15,6 +15,7 @@ EventType = Literal[
     "memory_retrieval",
     "provider_request",
     "provider_response",
+    "history_trimmed",
     "tool_call",
     "tool_result",
     "tool_error",
