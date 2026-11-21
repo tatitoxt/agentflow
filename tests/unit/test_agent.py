@@ -101,7 +101,8 @@ def test_tool_exception_can_abort_run() -> None:
     agent = Agent("a", provider, tools=[flaky], raise_on_tool_error=True, tracer=tracer)
     with pytest.raises(ToolExecutionError):
         agent.run("go")
-    assert tracer.events[-1].type == "run_error"
+    assert [e.type for e in tracer.events][-2:] == ["run_error", "run_end"]
+    assert tracer.events[-1].data["stop_reason"] == "error"
 
 
 def test_unknown_tool_is_reported_to_model() -> None:
@@ -143,7 +144,7 @@ def test_provider_error_is_traced_and_raised() -> None:
     agent = Agent("a", FakeProvider([]), tracer=tracer)
     with pytest.raises(ProviderError):
         agent.run("x")
-    assert [e.type for e in tracer.events][-1] == "run_error"
+    assert [e.type for e in tracer.events][-2:] == ["run_error", "run_end"]
 
 
 def test_history_is_prepended() -> None:
@@ -305,9 +306,7 @@ def test_token_budget_allows_runs_under_the_limit() -> None:
 def test_history_max_messages_keeps_head_and_drops_whole_groups() -> None:
     provider = FakeProvider(lambda messages, tools: FakeProvider.tool_call("flaky", n=1))
     tracer = Tracer()
-    agent = Agent(
-        "a", provider, tools=[flaky], max_steps=4, history_max_messages=5, tracer=tracer
-    )
+    agent = Agent("a", provider, tools=[flaky], max_steps=4, history_max_messages=5, tracer=tracer)
     result = agent.run("x")
     assert result.steps == 4
     seen = [len(call[0]) for call in provider.calls]
@@ -414,9 +413,7 @@ def test_parallel_tool_calls_run_concurrently_and_keep_order() -> None:
         ]
     )
     t0 = time.monotonic()
-    result = Agent(
-        "a", provider, tools=[slow, fast], max_tool_workers=3, max_steps=2
-    ).run("x")
+    result = Agent("a", provider, tools=[slow, fast], max_tool_workers=3, max_steps=2).run("x")
     elapsed = time.monotonic() - t0
     assert result.stop_reason == "final_answer"
     assert [r.content for r in result.tool_results] == ["s1", "s2", "f3"]

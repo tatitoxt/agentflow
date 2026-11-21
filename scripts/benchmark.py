@@ -129,14 +129,18 @@ def main() -> int:
         print(json.dumps(out, indent=2))
     else:
         al = out["agent_loop"]
-        print(f"agent loop: {al['runs_per_sec']} runs/sec "
-              f"({al['ms_per_run']} ms/run, {al['steps_per_sec']} steps/sec)")
+        print(
+            f"agent loop: {al['runs_per_sec']} runs/sec "
+            f"({al['ms_per_run']} ms/run, {al['steps_per_sec']} steps/sec)"
+        )
         if "pgvector" in out:
             pg = out["pgvector"]
-            print(f"pgvector {pg['docs']} docs: {pg['upsert_per_sec']:.0f} upserts/sec, "
-                  f"search p50 exact {pg['exact_search_ms']['p50']} ms "
-                  f"vs hnsw {pg['hnsw_search_ms']['p50']} ms "
-                  f"({pg['hnsw_speedup_p50']}x faster)")
+            print(
+                f"pgvector {pg['docs']} docs: {pg['upsert_per_sec']:.0f} upserts/sec, "
+                f"search p50 exact {pg['exact_search_ms']['p50']} ms "
+                f"vs hnsw {pg['hnsw_search_ms']['p50']} ms "
+                f"({pg['hnsw_speedup_p50']}x faster)"
+            )
     return 0
 
 

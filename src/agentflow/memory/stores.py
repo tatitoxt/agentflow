@@ -181,9 +181,7 @@ class PlainRedisVectorStore:
         try:
             import redis
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError(
-                "PlainRedisVectorStore needs `pip install agentflow[redis]`"
-            ) from exc
+            raise ImportError("PlainRedisVectorStore needs `pip install agentflow[redis]`") from exc
         self.dim = dim
         self.index_name = index_name
         self.prefix = f"{index_name}:doc:"
@@ -342,9 +340,7 @@ class PgVectorStore:
         )
         return name
 
-    def configure_search(
-        self, *, probes: int | None = None, ef_search: int | None = None
-    ) -> None:
+    def configure_search(self, *, probes: int | None = None, ef_search: int | None = None) -> None:
         """Tune ANN recall for this connection's queries.
 
         ``probes`` sets ``ivfflat.probes`` (IVFFlat index); ``ef_search`` sets

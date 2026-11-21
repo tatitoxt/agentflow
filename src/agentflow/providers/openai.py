@@ -134,62 +134,98 @@ class OpenAIProvider(HTTPProvider):
         data = self._post("/chat/completions", self.build_payload(messages, tools))
         return from_openai_response(data)
 
+    async def acomplete(self, messages: list[Message], tools: list[ToolSpec]) -> ProviderResponse:
+        data = await self._apost("/chat/completions", self.build_payload(messages, tools))
+        return from_openai_response(data)
+
+    def _stream_payload(self, messages: list[Message], tools: list[ToolSpec]) -> dict[str, Any]:
+        payload = self.build_payload(messages, tools)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        return payload
+
     def stream(
         self,
         messages: list[Message],
         tools: list[ToolSpec],
         on_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        payload = self.build_payload(messages, tools)
-        payload["stream"] = True
-        payload["stream_options"] = {"include_usage": True}
-        text_parts: list[str] = []
-        tool_fragments: dict[int, dict[str, str]] = {}
-        finish_reason: str | None = None
-        usage = Usage()
-        model: str | None = None
-        for chunk in self._stream_events("/chat/completions", payload):
-            model = model or chunk.get("model")
-            raw_usage = chunk.get("usage")
-            if raw_usage:
-                usage = Usage(
-                    input_tokens=raw_usage.get("prompt_tokens", 0),
-                    output_tokens=raw_usage.get("completion_tokens", 0),
-                )
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            choice = choices[0]
-            finish_reason = choice.get("finish_reason") or finish_reason
-            delta = choice.get("delta") or {}
-            if delta.get("content"):
-                text_parts.append(delta["content"])
-                if on_delta is not None:
-                    on_delta(delta["content"])
-            for tc in delta.get("tool_calls") or []:
-                frag = tool_fragments.setdefault(
-                    tc.get("index", 0), {"id": "", "name": "", "arguments": ""}
-                )
-                if tc.get("id"):
-                    frag["id"] += tc["id"]
-                function = tc.get("function") or {}
-                if function.get("name"):
-                    frag["name"] += function["name"]
-                if function.get("arguments"):
-                    frag["arguments"] += function["arguments"]
+        acc = _StreamAccumulator(on_delta)
+        for chunk in self._stream_events(
+            "/chat/completions", self._stream_payload(messages, tools)
+        ):
+            acc.feed(chunk)
+        return acc.finish()
+
+    async def astream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        on_delta: Callable[[str], None] | None = None,
+    ) -> ProviderResponse:
+        acc = _StreamAccumulator(on_delta)
+        async for chunk in self._astream_events(
+            "/chat/completions", self._stream_payload(messages, tools)
+        ):
+            acc.feed(chunk)
+        return acc.finish()
+
+
+class _StreamAccumulator:
+    """Fold Chat Completions stream chunks into a ProviderResponse."""
+
+    def __init__(self, on_delta: Callable[[str], None] | None = None) -> None:
+        self._on_delta = on_delta
+        self._text_parts: list[str] = []
+        self._tool_fragments: dict[int, dict[str, str]] = {}
+        self._finish_reason: str | None = None
+        self._usage = Usage()
+        self._model: str | None = None
+
+    def feed(self, chunk: dict[str, Any]) -> None:
+        self._model = self._model or chunk.get("model")
+        raw_usage = chunk.get("usage")
+        if raw_usage:
+            self._usage = Usage(
+                input_tokens=raw_usage.get("prompt_tokens", 0),
+                output_tokens=raw_usage.get("completion_tokens", 0),
+            )
+        choices = chunk.get("choices") or []
+        if not choices:
+            return
+        choice = choices[0]
+        self._finish_reason = choice.get("finish_reason") or self._finish_reason
+        delta = choice.get("delta") or {}
+        if delta.get("content"):
+            self._text_parts.append(delta["content"])
+            if self._on_delta is not None:
+                self._on_delta(delta["content"])
+        for tc in delta.get("tool_calls") or []:
+            frag = self._tool_fragments.setdefault(
+                tc.get("index", 0), {"id": "", "name": "", "arguments": ""}
+            )
+            if tc.get("id"):
+                frag["id"] += tc["id"]
+            function = tc.get("function") or {}
+            if function.get("name"):
+                frag["name"] += function["name"]
+            if function.get("arguments"):
+                frag["arguments"] += function["arguments"]
+
+    def finish(self) -> ProviderResponse:
         calls = [
             ToolCall(
                 id=frag["id"] or f"call_{i}",
                 name=frag["name"],
                 arguments=_parse_arguments(frag["arguments"]),
             )
-            for i, frag in sorted(tool_fragments.items())
+            for i, frag in sorted(self._tool_fragments.items())
         ]
         return ProviderResponse(
-            message=Message.assistant("".join(text_parts), calls),
-            stop_reason=finish_reason,
-            usage=usage,
-            model=model,
+            message=Message.assistant("".join(self._text_parts), calls),
+            stop_reason=self._finish_reason,
+            usage=self._usage,
+            model=self._model,
         )
 
 

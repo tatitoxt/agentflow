@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import sys
 import uuid
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import ProviderError
 from .pricing import estimate_cost
-from .providers.base import Provider
+from .providers.base import (
+    AsyncProvider,
+    AsyncStreamingProvider,
+    Provider,
+    StreamingProvider,
+)
 from .tools import Tool, ToolRegistry, ToolResult
 from .tracing import Tracer
 from .types import Message, ProviderResponse, Usage
@@ -122,13 +129,30 @@ _current_run: contextvars.ContextVar[_RunContext | None] = contextvars.ContextVa
 )
 
 
+_T = TypeVar("_T")
+
+
+def _run_coro_sync(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Drive a coroutine to completion on a private event loop in a worker
+    thread, copying contextvars so nested ``arun`` calls keep their parent.
+
+    Using a thread (rather than ``asyncio.run`` inline) makes it legal to call
+    ``Agent.run`` from inside a running event loop.
+    """
+    ctx = contextvars.copy_context()
+
+    def runner() -> _T:
+        return ctx.run(asyncio.run, coro)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(runner).result()
+
+
 def _new_run_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _trim_history(
-    messages: list[Message], limit: int
-) -> tuple[list[Message], list[Message]]:
+def _trim_history(messages: list[Message], limit: int) -> tuple[list[Message], list[Message]]:
     """Keep at most ``limit`` messages: the head (system/context/user) plus the
     newest assistant+tool groups, so a kept tool result always follows the
     assistant message that requested it. Returns ``(kept, dropped)``.
@@ -235,12 +259,34 @@ class Agent:
         tracer: Tracer | None = None,
         on_delta: Callable[[str], None] | None = None,
     ) -> RunResult:
+        """Synchronous wrapper around :meth:`arun`.
+
+        The coroutine runs on a private event loop in a worker thread, so this
+        is safe to call from inside a running event loop (e.g. a FastAPI
+        handler) and from tool-execution threads for nested agent runs.
+        """
+        return _run_coro_sync(self.arun(input, history=history, tracer=tracer, on_delta=on_delta))
+
+    async def arun(
+        self,
+        input: str,
+        *,
+        history: Sequence[Message] = (),
+        tracer: Tracer | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> RunResult:
         """Run the loop until a final answer, a stop condition or ``max_steps``.
 
+        Providers implementing ``acomplete``/``astream`` (see
+        :class:`AsyncProvider`) are awaited natively; sync-only providers are
+        driven on a thread so they never block the event loop. Cancelling the
+        coroutine abandons the run and still emits ``run_end``.
+
         When ``on_delta`` is given and the provider supports streaming
-        (:class:`StreamingProvider`), each assistant text fragment is passed to
-        the callback as it arrives (and traced as ``provider_delta``). Providers
-        without streaming fall back to one callback with the whole response.
+        (:class:`StreamingProvider`/:class:`AsyncStreamingProvider`), each
+        assistant text fragment is passed to the callback as it arrives (and
+        traced as ``provider_delta``). Providers without streaming fall back to
+        one callback with the whole response.
         """
         parent = _current_run.get()
         tracer = tracer or (parent.tracer if parent else None) or self.tracer or Tracer()
@@ -275,7 +321,7 @@ class Agent:
                     if dropped:
                         if self.summarizer is not None:
                             try:
-                                summary = self.summarizer(dropped)
+                                summary = await asyncio.to_thread(self.summarizer, dropped)
                             except Exception as exc:
                                 emit(
                                     "history_summarize_error",
@@ -302,14 +348,27 @@ class Agent:
                         state.messages = messages
                 emit("provider_request", step, provider=self.provider.name, messages=len(messages))
                 try:
-                    if on_delta is not None and hasattr(self.provider, "stream"):
+                    provider = self.provider
+                    if on_delta is not None and isinstance(
+                        provider, AsyncStreamingProvider | StreamingProvider
+                    ):
+
                         def relay(text: str, *, _step: int = step) -> None:
                             emit("provider_delta", _step, text=text)
                             on_delta(text)
 
-                        response = self.provider.stream(list(messages), specs, relay)
+                        if isinstance(provider, AsyncStreamingProvider):
+                            response = await provider.astream(list(messages), specs, relay)
+                        else:
+                            response = await asyncio.to_thread(
+                                provider.stream, list(messages), specs, relay
+                            )
+                    elif isinstance(provider, AsyncProvider):
+                        response = await provider.acomplete(list(messages), specs)
+                        if on_delta is not None and response.message.content:
+                            on_delta(response.message.content)
                     else:
-                        response = self.provider.complete(list(messages), specs)
+                        response = await asyncio.to_thread(provider.complete, list(messages), specs)
                         if on_delta is not None and response.message.content:
                             on_delta(response.message.content)
                 except ProviderError as exc:
@@ -373,8 +432,13 @@ class Agent:
                             name=c.name,
                             arguments=c.arguments,
                         )
-                    with ThreadPoolExecutor(max_workers=self.max_tool_workers) as pool:
-                        executed = list(pool.map(self.tools.execute, calls))
+                    gate = asyncio.Semaphore(self.max_tool_workers)
+
+                    async def run_tool(call: Any, *, _gate: asyncio.Semaphore = gate) -> ToolResult:
+                        async with _gate:
+                            return await asyncio.to_thread(self.tools.execute, call)
+
+                    executed = list(await asyncio.gather(*(run_tool(c) for c in calls)))
                 else:
                     executed = [None] * len(calls)
                 for index, call in enumerate(calls):
@@ -387,7 +451,7 @@ class Agent:
                             name=call.name,
                             arguments=call.arguments,
                         )
-                        result = self.tools.execute(call)
+                        result = await asyncio.to_thread(self.tools.execute, call)
                     state.tool_results.append(result)
                     messages.append(
                         Message.tool(call.id, call.name, result.content, is_error=result.is_error)
@@ -442,15 +506,17 @@ class Agent:
                     break
         finally:
             _current_run.reset(token)
-        emit(
-            "run_end",
-            state.step,
-            stop_reason=stop_reason,
-            output=_preview(output),
-            steps=state.step,
-            usage=usage.model_dump(),
-            cost_usd=state.cost_usd,
-        )
+            if sys.exc_info()[0] is not None:
+                stop_reason = "error"
+            emit(
+                "run_end",
+                state.step,
+                stop_reason=stop_reason,
+                output=_preview(output),
+                steps=state.step,
+                usage=usage.model_dump(),
+                cost_usd=state.cost_usd,
+            )
         return RunResult(
             output=output,
             stop_reason=stop_reason,

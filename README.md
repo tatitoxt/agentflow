@@ -43,6 +43,14 @@ you test agents without API keys.
   assistant text fragment as it arrives (`provider_delta` trace events). Providers
   implementing `StreamingProvider` — OpenAI, Groq, Anthropic — stream over SSE;
   others get a single callback with the full response.
+- **Async API**: `await agent.arun(...)` mirrors `run` — the same loop driven on
+  `asyncio`. Providers implementing `acomplete`/`astream` (`AsyncProvider` /
+  `AsyncStreamingProvider`; OpenAI, Groq, Anthropic all do) are awaited natively
+  through `httpx.AsyncClient`; sync-only providers run on a thread so the event
+  loop never blocks. `run` itself bridges through a private loop in a worker
+  thread, so it is legal to call from inside a running event loop, and nested
+  agent runs (handoffs) keep their parent link. Cancelling the coroutine
+  abandons the run and still closes the trace with `run_end`.
 - **Tracing**: typed events (`run_start`, `memory_retrieval`, `provider_request`,
   `provider_delta`,
   `provider_response`, `tool_call`, `tool_result`, `tool_error`, `handoff_start`,
@@ -237,7 +245,6 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 ## Roadmap
 
-- Async API.
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
 - Automatic index hints for large corpora (HNSW/IVFFlat via `ensure_index` is manual today; RediSearch already KNN).
 

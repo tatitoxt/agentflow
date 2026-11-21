@@ -132,49 +132,86 @@ class AnthropicProvider(HTTPProvider):
         data = self._post("/v1/messages", self.build_payload(messages, tools))
         return from_anthropic_response(data)
 
+    async def acomplete(self, messages: list[Message], tools: list[ToolSpec]) -> ProviderResponse:
+        data = await self._apost("/v1/messages", self.build_payload(messages, tools))
+        return from_anthropic_response(data)
+
+    def _stream_payload(self, messages: list[Message], tools: list[ToolSpec]) -> dict[str, Any]:
+        payload = self.build_payload(messages, tools)
+        payload["stream"] = True
+        return payload
+
     def stream(
         self,
         messages: list[Message],
         tools: list[ToolSpec],
         on_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        payload = self.build_payload(messages, tools)
-        payload["stream"] = True
-        text_parts: list[str] = []
-        tool_blocks: dict[int, dict[str, str]] = {}
-        input_tokens, output_tokens = 0, 0
-        stop_reason: str | None = None
-        model: str | None = None
-        for event in self._stream_events("/v1/messages", payload):
-            kind = event.get("type")
-            if kind == "message_start":
-                message = event.get("message") or {}
-                model = model or message.get("model")
-                input_tokens = (message.get("usage") or {}).get("input_tokens", 0)
-            elif kind == "content_block_start":
-                block = event.get("content_block") or {}
-                if block.get("type") == "tool_use":
-                    tool_blocks[event["index"]] = {
-                        "id": block.get("id", ""),
-                        "name": block.get("name", ""),
-                        "arguments": "",
-                    }
-            elif kind == "content_block_delta":
-                delta = event.get("delta") or {}
-                index = event.get("index", 0)
-                if delta.get("type") == "text_delta" and delta.get("text"):
-                    text_parts.append(delta["text"])
-                    if on_delta is not None:
-                        on_delta(delta["text"])
-                elif delta.get("type") == "input_json_delta" and index in tool_blocks:
-                    tool_blocks[index]["arguments"] += delta.get("partial_json", "")
-            elif kind == "message_delta":
-                delta = event.get("delta") or {}
-                stop_reason = delta.get("stop_reason") or stop_reason
-                output_tokens = (event.get("usage") or {}).get("output_tokens", output_tokens)
+        acc = _StreamAccumulator(on_delta)
+        for event in self._stream_events("/v1/messages", self._stream_payload(messages, tools)):
+            acc.feed(event)
+        return acc.finish()
+
+    async def astream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        on_delta: Callable[[str], None] | None = None,
+    ) -> ProviderResponse:
+        acc = _StreamAccumulator(on_delta)
+        async for event in self._astream_events(
+            "/v1/messages", self._stream_payload(messages, tools)
+        ):
+            acc.feed(event)
+        return acc.finish()
+
+
+class _StreamAccumulator:
+    """Fold Messages API stream events into a ProviderResponse."""
+
+    def __init__(self, on_delta: Callable[[str], None] | None = None) -> None:
+        self._on_delta = on_delta
+        self._text_parts: list[str] = []
+        self._tool_blocks: dict[int, dict[str, str]] = {}
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._stop_reason: str | None = None
+        self._model: str | None = None
+
+    def feed(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        if kind == "message_start":
+            message = event.get("message") or {}
+            self._model = self._model or message.get("model")
+            self._input_tokens = (message.get("usage") or {}).get("input_tokens", 0)
+        elif kind == "content_block_start":
+            block = event.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                self._tool_blocks[event["index"]] = {
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "arguments": "",
+                }
+        elif kind == "content_block_delta":
+            delta = event.get("delta") or {}
+            index = event.get("index", 0)
+            if delta.get("type") == "text_delta" and delta.get("text"):
+                self._text_parts.append(delta["text"])
+                if self._on_delta is not None:
+                    self._on_delta(delta["text"])
+            elif delta.get("type") == "input_json_delta" and index in self._tool_blocks:
+                self._tool_blocks[index]["arguments"] += delta.get("partial_json", "")
+        elif kind == "message_delta":
+            delta = event.get("delta") or {}
+            self._stop_reason = delta.get("stop_reason") or self._stop_reason
+            self._output_tokens = (event.get("usage") or {}).get(
+                "output_tokens", self._output_tokens
+            )
+
+    def finish(self) -> ProviderResponse:
         calls = []
-        for index in sorted(tool_blocks):
-            block = tool_blocks[index]
+        for index in sorted(self._tool_blocks):
+            block = self._tool_blocks[index]
             try:
                 arguments = json.loads(block["arguments"]) if block["arguments"] else {}
             except ValueError:
@@ -187,8 +224,8 @@ class AnthropicProvider(HTTPProvider):
                 )
             )
         return ProviderResponse(
-            message=Message.assistant("".join(text_parts), calls),
-            stop_reason=stop_reason,
-            usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens),
-            model=model,
+            message=Message.assistant("".join(self._text_parts), calls),
+            stop_reason=self._stop_reason,
+            usage=Usage(input_tokens=self._input_tokens, output_tokens=self._output_tokens),
+            model=self._model,
         )
