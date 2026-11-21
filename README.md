@@ -43,6 +43,11 @@ you test agents without API keys.
   assistant text fragment as it arrives (`provider_delta` trace events). Providers
   implementing `StreamingProvider` — OpenAI, Groq, Anthropic — stream over SSE;
   others get a single callback with the full response.
+- **Streaming-first API**: `agent.arun_events(...)` / `agent.stream_events(...)`
+  return a live iterator of the run's typed `Event`s (`run_start`,
+  `provider_request`, `provider_delta`, `tool_call`, `tool_result`, `run_end`…)
+  as they happen — including nested handoff runs — for progress UIs and SSE
+  relays; errors re-raise after the recorded events drain.
 - **Async API**: `await agent.arun(...)` mirrors `run` — the same loop driven on
   `asyncio`. Providers implementing `acomplete`/`astream` (`AsyncProvider` /
   `AsyncStreamingProvider`; OpenAI, Groq, Anthropic all do) are awaited natively
@@ -248,7 +253,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 ## Roadmap
 
-- Streaming-first API surface (token deltas through `arun` callbacks beyond `on_delta`).
+- Record/replay fixtures for provider responses (regression tests on real model output).
 
 ## License
 

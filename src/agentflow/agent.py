@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import queue
 import sys
+import threading
 import uuid
-from collections.abc import Callable, Coroutine, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -20,7 +22,7 @@ from .providers.base import (
     StreamingProvider,
 )
 from .tools import Tool, ToolRegistry, ToolResult
-from .tracing import Tracer
+from .tracing import Event, Tracer
 from .types import Message, ProviderResponse, Usage
 
 if TYPE_CHECKING:
@@ -527,6 +529,100 @@ class Agent:
             usage=usage,
             cost_usd=state.cost_usd,
         )
+
+    def arun_events(
+        self,
+        input: str,
+        *,
+        history: Sequence[Message] = (),
+        tracer: Tracer | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> AsyncIterator[Event]:
+        """Run the loop and yield each trace :class:`Event` as it happens.
+
+        The stream is the same flow a :class:`Tracer` records —
+        ``run_start``, ``provider_request``, ``provider_delta`` (when the
+        provider streams; pass ``on_delta`` too if only the text matters),
+        ``tool_call``/``tool_result``, ``run_end`` — so a consumer renders
+        progress live instead of waiting on :meth:`arun`'s result. Nested
+        agent runs appear inline with ``parent_run_id`` set, and the final
+        ``run_end`` event carries the outcome (``stop_reason``, ``output``
+        preview, ``usage``, ``cost_usd``). A provider or tool error ends the
+        stream and re-raises after the recorded events have been yielded.
+        """
+        events: asyncio.Queue[Event | None] = asyncio.Queue()
+        tracer = tracer or Tracer()
+        sink = events.put_nowait
+        tracer.sinks.append(sink)
+
+        async def drive() -> None:
+            try:
+                await self.arun(input, history=history, tracer=tracer, on_delta=on_delta)
+            finally:
+                events.put_nowait(None)
+
+        async def gen() -> AsyncIterator[Event]:
+            task = asyncio.ensure_future(drive())
+            try:
+                while True:
+                    event = await events.get()
+                    if event is None:
+                        break
+                    yield event
+                await task  # re-raise a provider/tool error once the stream drains
+            finally:
+                if sink in tracer.sinks:
+                    tracer.sinks.remove(sink)
+                if not task.done():
+                    task.cancel()
+
+        return gen()
+
+    def stream_events(
+        self,
+        input: str,
+        *,
+        history: Sequence[Message] = (),
+        tracer: Tracer | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> Iterator[Event]:
+        """Synchronous counterpart of :meth:`arun_events`.
+
+        The run executes on a worker thread while this generator yields each
+        :class:`Event` live to the caller's thread, so progress can render
+        without an event loop. End-of-stream and error semantics match the
+        async version.
+        """
+        events: queue.Queue[Event | BaseException | None] = queue.Queue()
+        tracer = tracer or Tracer()
+        sink = events.put_nowait
+        tracer.sinks.append(sink)
+
+        def drive() -> None:
+            try:
+                self.run(input, history=history, tracer=tracer, on_delta=on_delta)
+            except BaseException as exc:
+                events.put_nowait(exc)
+            finally:
+                events.put_nowait(None)
+
+        worker = threading.Thread(target=drive, daemon=True)
+
+        def gen() -> Iterator[Event]:
+            worker.start()
+            try:
+                while True:
+                    item = events.get()
+                    if item is None:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+            finally:
+                if sink in tracer.sinks:
+                    tracer.sinks.remove(sink)
+
+        return gen()
 
     def as_tool(self, name: str | None = None, description: str | None = None) -> Tool:
         """Expose this agent as a tool so another agent can delegate a task to it."""
