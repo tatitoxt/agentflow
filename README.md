@@ -244,3 +244,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 ## License
 
 [MIT](LICENSE) © Fausto Pastura
+
+## Benchmarks
+
+`scripts/benchmark.py` measures the agent loop without API keys (**3.8k runs/sec**, 0.26 ms/run of framework overhead) and pgvector memory latency (HNSW **3.3× faster** than exact k-NN at 10k vectors). See [docs/benchmarks.md](docs/benchmarks.md).
