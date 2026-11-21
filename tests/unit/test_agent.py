@@ -357,7 +357,7 @@ def test_summarizer_replaces_dropped_messages_with_a_system_note() -> None:
         summarizer=summarize,
         tracer=tracer,
     )
-    result = agent.run("x")
+    agent.run("x")
     assert captured, "summarizer was never called"
     assert all(m.role in {"assistant", "tool"} for batch in captured for m in batch)
     sent = provider.calls[-1][0]
