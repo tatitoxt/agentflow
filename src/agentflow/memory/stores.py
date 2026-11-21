@@ -188,7 +188,7 @@ class PlainRedisVectorStore:
         self.index_name = index_name
         self.prefix = f"{index_name}:doc:"
         self._ids_key = f"{index_name}:ids"
-        self.client = client or redis.Redis.from_url(url)
+        self.client: Any = client or redis.Redis.from_url(url)
 
     def _pack(self, vector: Sequence[float]) -> bytes:
         if len(vector) != self.dim:
@@ -271,7 +271,7 @@ class PgVectorStore:
         self.dim = dim
         self.index_name = index_name
         self.table = f"agentflow_{index_name}"
-        self.conn = client or psycopg.connect(url, autocommit=True)
+        self.conn: Any = client or psycopg.connect(url, autocommit=True)
         self.conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         self.conn.execute(
             f'CREATE TABLE IF NOT EXISTS "{self.table}" ('
