@@ -1,4 +1,4 @@
-"""Vector stores: an in-memory store and a persistent Redis Stack (RediSearch) store."""
+"""Vector stores: an in-memory store, a Redis Stack (RediSearch) store, and a plain-Redis store."""
 
 from __future__ import annotations
 
@@ -159,6 +159,89 @@ class RedisVectorStore:
         """Drop the index and its documents."""
         self.client.ft(self.index_name).dropindex(delete_documents=True)
         self._ensure_index()
+
+
+class PlainRedisVectorStore:
+    """Persistent store for plain Redis — no RediSearch module required.
+
+    Records are the same hashes as :class:`RedisVectorStore` (so both stores can
+    share a prefix), with ids tracked in a ``<index>:ids`` set; search fetches
+    each hash and computes cosine in Python. Fine for small memories; for
+    thousands of records prefer the RediSearch-backed store.
+    """
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        url: str = "redis://localhost:6379/0",
+        index_name: str = "agentflow",
+        client: Any | None = None,
+    ) -> None:
+        try:
+            import redis
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError(
+                "PlainRedisVectorStore needs `pip install agentflow[redis]`"
+            ) from exc
+        self.dim = dim
+        self.index_name = index_name
+        self.prefix = f"{index_name}:doc:"
+        self._ids_key = f"{index_name}:ids"
+        self.client = client or redis.Redis.from_url(url)
+
+    def _pack(self, vector: Sequence[float]) -> bytes:
+        if len(vector) != self.dim:
+            raise ValueError(f"expected vector of dim {self.dim}, got {len(vector)}")
+        return struct.pack(f"<{self.dim}f", *vector)
+
+    def _unpack(self, blob: bytes) -> list[float]:
+        return list(struct.unpack(f"<{self.dim}f", blob))
+
+    def upsert(self, records: Sequence[Record]) -> None:
+        pipe = self.client.pipeline(transaction=False)
+        for r in records:
+            pipe.hset(
+                f"{self.prefix}{r.id}",
+                mapping={
+                    "record_id": r.id,
+                    "text": r.text,
+                    "metadata": json.dumps(r.metadata, sort_keys=True),
+                    "embedding": self._pack(r.vector),
+                },
+            )
+            pipe.sadd(self._ids_key, r.id)
+        pipe.execute()
+
+    def search(self, vector: Sequence[float], k: int) -> list[tuple[Record, float]]:
+        if len(vector) != self.dim:
+            raise ValueError(f"expected vector of dim {self.dim}, got {len(vector)}")
+        hits: list[tuple[Record, float]] = []
+        for raw_id in self.client.sscan_iter(self._ids_key):
+            doc = self.client.hgetall(f"{self.prefix}{_text(raw_id)}")
+            if not doc:
+                continue
+            record = Record(
+                id=_text(doc.get(b"record_id", raw_id)),
+                text=_text(doc.get(b"text", b"")),
+                vector=[],
+                metadata=json.loads(_text(doc.get(b"metadata", b"{}")) or "{}"),
+            )
+            blob = doc.get(b"embedding", b"")
+            score = cosine(vector, self._unpack(blob)) if blob else 0.0
+            hits.append((record, score))
+        hits.sort(key=lambda item: (-item[1], item[0].id))
+        return hits[:k]
+
+    def count(self) -> int:
+        return int(self.client.scard(self._ids_key))
+
+    def clear(self) -> None:
+        ids = [_text(raw) for raw in self.client.sscan_iter(self._ids_key)]
+        if ids:
+            self.client.delete(*[f"{self.prefix}{i}" for i in ids], self._ids_key)
+        else:
+            self.client.delete(self._ids_key)
 
 
 def _text(value: Any) -> str:

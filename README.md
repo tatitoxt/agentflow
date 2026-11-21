@@ -40,7 +40,8 @@ you test agents without API keys.
   (OpenAI-compatible), with retry/backoff on 408/409/429/5xx, plus `FakeProvider` (scripted,
   deterministic). Real providers are opt-in via env vars.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
-  `InMemoryVectorStore` or `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent).
+  `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent)
+  or `PlainRedisVectorStore` (module-free Redis, persistent).
   Retrieved snippets are injected into the agent context with their source.
 - **Multi-agent handoff**: `agent.as_tool()` exposes an agent as a tool; the child run shares
   the parent's trace and records `parent_run_id`.
@@ -194,9 +195,12 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
   response formats are tested with mocked HTTP. Streaming, vision and parallel-tool-call
   options are not implemented.
 - **HashingEmbedder is lexical**, not semantic: it matches overlapping words, not meaning.
-- **RedisVectorStore needs Redis Stack (RediSearch)**; plain Redis is not supported. The index
-  dimension is fixed at creation; changing embedders requires a new index name.
-- Synchronous API only; tools run sequentially; no token budgeting or context truncation.
+- **RedisVectorStore needs Redis Stack (RediSearch)** — use `PlainRedisVectorStore` for a
+  module-free Redis. The RediSearch index dimension is fixed at creation; changing embedders
+  requires a new index name.
+- Synchronous API only; tools run sequentially.
+- `PlainRedisVectorStore` scans records in Python — fine for small memories; use
+  `RedisVectorStore` (RediSearch KNN) for thousands of records.
 - No benchmarks were run; no performance claims are made.
 
 ## Roadmap
@@ -205,7 +209,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 - Streaming responses and cost budgets (pricing data per provider).
 - Context summarization (only trimming via `history_max_messages` exists today).
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
-- More stores (pgvector) and a plain-Redis fallback store.
+- More stores (pgvector).
 
 ## License
 

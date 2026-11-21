@@ -2,7 +2,14 @@
 
 from .embedders import Embedder, HashingEmbedder, OpenAIEmbedder, tokenize
 from .memory import MemoryHit, VectorMemory, chunk_text, content_id
-from .stores import InMemoryVectorStore, Record, RedisVectorStore, VectorStore, cosine
+from .stores import (
+    InMemoryVectorStore,
+    PlainRedisVectorStore,
+    Record,
+    RedisVectorStore,
+    VectorStore,
+    cosine,
+)
 
 __all__ = [
     "Embedder",
@@ -10,6 +17,7 @@ __all__ = [
     "InMemoryVectorStore",
     "MemoryHit",
     "OpenAIEmbedder",
+    "PlainRedisVectorStore",
     "Record",
     "RedisVectorStore",
     "VectorMemory",
