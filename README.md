@@ -215,7 +215,8 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 - **RedisVectorStore needs Redis Stack (RediSearch)** — use `PlainRedisVectorStore` for a
   module-free Redis. The RediSearch index dimension is fixed at creation; changing embedders
   requires a new index name.
-- Synchronous API only; tools run sequentially.
+- Synchronous API only; tools run concurrently only within a step
+  (`max_tool_workers`) and only when the model requests more than one.
 - `PlainRedisVectorStore` scans records in Python — fine for small memories; use
   `RedisVectorStore` (RediSearch KNN) for thousands of records.
 - No benchmarks were run; no performance claims are made.
