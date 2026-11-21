@@ -61,7 +61,7 @@ you test agents without API keys.
   deterministic). Real providers are opt-in via env vars.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
   `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent),
-  `PgVectorStore` (pgvector; `ensure_index` builds HNSW/IVFFlat, `configure_search` tunes recall).
+  `PgVectorStore` (pgvector; `ensure_index`/`auto_index` build HNSW/IVFFlat, `configure_search` tunes recall).
 - **Cost accounting**: each provider response is priced via the table in
   `agentflow.pricing` (longest-prefix model matching; `register_price` for custom
   models) and accumulated into `RunResult.cost_usd`, the `provider_response` /
@@ -71,6 +71,8 @@ you test agents without API keys.
   Retrieved snippets are injected into the agent context with their source. `PgVectorStore`
   searches exactly by default; `ensure_index()` adds an HNSW (or IVFFlat) cosine index and
   `configure_search()` tunes recall (`hnsw.ef_search` / `ivfflat.probes`) for large corpora.
+  `auto_index(threshold=…)` builds it automatically once the table is big enough to benefit —
+  below the threshold an exact scan is cheaper, so it stays index-free.
 - **Multi-agent handoff**: `agent.as_tool()` exposes an agent as a tool; the child run shares
   the parent's trace and records `parent_run_id`.
 - **CLI**: `agentflow run examples/<name>.py` and `agentflow trace <file.jsonl>`.
@@ -246,7 +248,6 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 ## Roadmap
 
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
-- Automatic index hints for large corpora (HNSW/IVFFlat via `ensure_index` is manual today; RediSearch already KNN).
 
 ## License
 

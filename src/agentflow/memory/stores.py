@@ -248,8 +248,9 @@ class PgVectorStore:
     One table per ``index_name`` (``agentflow_<index_name>``): id, text,
     metadata (jsonb) and a ``vector(dim)`` column. Search orders by cosine
     distance (``<=>``); scores are ``1 - distance``. Search is exact until
-    ``ensure_index()`` builds an HNSW/IVFFlat index for large corpora, with
-    recall tuned via ``configure_search()``.
+    ``ensure_index()`` (or ``auto_index()`` past a size threshold) builds an
+    HNSW/IVFFlat index for large corpora, with recall tuned via
+    ``configure_search()``.
     """
 
     def __init__(
@@ -339,6 +340,36 @@ class PgVectorStore:
             f" USING {method} (embedding vector_cosine_ops) WITH ({options})"
         )
         return name
+
+    def index_exists(self, method: str = "hnsw") -> str | None:
+        """Name of the existing ANN index for ``method``, or None."""
+        name = f"{self.table}_{method}_idx"
+        row = self.conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename = %s AND indexname = %s",
+            (self.table, name),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def auto_index(
+        self,
+        *,
+        threshold: int = 50_000,
+        method: str = "hnsw",
+        **index_options: Any,
+    ) -> str | None:
+        """Build an ANN index only when the corpus is large enough to benefit.
+
+        Below ``threshold`` rows an exact scan is cheaper than maintaining an
+        approximate index, so this is a no-op and returns None. At or above it,
+        delegates to ``ensure_index`` (idempotent) and returns the index name.
+        Call it after bulk loads or on a maintenance schedule.
+        """
+        existing = self.index_exists(method)
+        if existing:
+            return existing
+        if self.count() < threshold:
+            return None
+        return self.ensure_index(method, **index_options)
 
     def configure_search(self, *, probes: int | None = None, ef_search: int | None = None) -> None:
         """Tune ANN recall for this connection's queries.

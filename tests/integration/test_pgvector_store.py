@@ -69,3 +69,22 @@ def test_pgvector_ensure_index_and_configure_search(pg_url: str, pg_index: str) 
         "SELECT indexname FROM pg_indexes WHERE tablename = %s", (store.table,)
     ).fetchall()
     assert {f"{store.table}_hnsw_idx", f"{store.table}_ivfflat_idx"} <= {r[0] for r in rows}
+
+
+def test_pgvector_auto_index_threshold(pg_url: str, pg_index: str) -> None:
+    store = PgVectorStore(dim=4, url=pg_url, index_name=pg_index)
+    # Below the threshold an exact scan stays in place.
+    assert store.auto_index(threshold=10) is None
+    assert store.index_exists() is None
+
+    store.upsert(
+        [Record(id=str(i), text=f"doc {i}", vector=[float(i), 0.0, 0.0, 1.0]) for i in range(12)]
+    )
+    name = store.auto_index(threshold=10)
+    assert name == f"{store.table}_hnsw_idx"
+    assert store.index_exists() == name
+    # Second call is a no-op returning the existing index.
+    assert store.auto_index(threshold=10_000) == name
+    # Search still returns sane results through the index.
+    hits = store.search([11.0, 0.0, 0.0, 1.0], k=1)
+    assert hits[0][0].id == "11"
