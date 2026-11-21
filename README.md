@@ -10,6 +10,10 @@ Everything runs offline by default against a deterministic scripted provider.
 > Status: v0.1, a portfolio/learning project. It is not used in production and has no
 > external users. See [Limitations](#limitations).
 
+<p align="center">
+  <img src="docs/demo.svg" width="880" alt="agentflow run: RAG answer + ticket triage with tool calls">
+</p>
+
 ## Problem
 
 Small tool-calling agents tend to start as glue code: a loop around a chat API, hand-written
