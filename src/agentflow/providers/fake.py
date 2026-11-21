@@ -69,3 +69,16 @@ class FakeProvider:
         if response.model is None:
             response = response.model_copy(update={"model": self.model})
         return response
+
+    def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        on_delta: Callable[[str], None] | None = None,
+    ) -> ProviderResponse:
+        """Replay the scripted response, emitting the content in small chunks."""
+        response = self.complete(messages, tools)
+        if on_delta is not None and response.message.content:
+            for i in range(0, len(response.message.content), 8):
+                on_delta(response.message.content[i : i + 8])
+        return response

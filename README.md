@@ -39,7 +39,12 @@ you test agents without API keys.
   concurrently on a thread pool; results and messages stay in call order. Stop conditions
   still apply — a mid-batch stop records the already-executed calls' real results instead
   of marking them skipped.
+- **Streaming**: `Agent.run(..., on_delta=fn)` invokes the callback with each
+  assistant text fragment as it arrives (`provider_delta` trace events). Providers
+  implementing `StreamingProvider` — OpenAI, Groq, Anthropic — stream over SSE;
+  others get a single callback with the full response.
 - **Tracing**: typed events (`run_start`, `memory_retrieval`, `provider_request`,
+  `provider_delta`,
   `provider_response`, `tool_call`, `tool_result`, `tool_error`, `handoff_start`,
   `handoff_end`, `run_end`, `run_error`) streamed to sinks; JSONL export and reload.
 - **Providers** behind one `Provider` protocol, all over `httpx` (no vendor SDKs):
@@ -232,7 +237,7 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 
 ## Roadmap
 
-- Async API and streaming responses.
+- Async API.
 - Opt-in live smoke tests against real providers (manual workflow with secrets).
 - Automatic index hints for large corpora (HNSW/IVFFlat via `ensure_index` is manual today; RediSearch already KNN).
 

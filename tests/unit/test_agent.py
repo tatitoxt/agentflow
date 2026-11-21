@@ -466,3 +466,32 @@ def test_run_result_reports_estimated_cost() -> None:
     result = Agent("a", FakeProvider([resp])).run("x")
     # $0.15/M in + $0.60/M out -> 0.15 + 0.30 = 0.45
     assert result.cost_usd == pytest.approx(0.45)
+
+
+def test_on_delta_streams_response_chunks() -> None:
+    provider = FakeProvider(["Hello world, this is a longer answer."])
+    deltas: list[str] = []
+    result = Agent("a", provider).run("x", on_delta=deltas.append)
+    assert "".join(deltas) == "Hello world, this is a longer answer."
+    assert result.output == "Hello world, this is a longer answer."
+
+
+def test_on_delta_emits_provider_delta_trace_events() -> None:
+    tracer = Tracer()
+    provider = FakeProvider(["chunked output here"])
+    Agent("a", provider, tracer=tracer).run("x", on_delta=lambda t: None)
+    delta_events = [e for e in tracer.events if e.type == "provider_delta"]
+    assert delta_events and "".join(e.data["text"] for e in delta_events) == "chunked output here"
+
+
+def test_on_delta_falls_back_for_non_streaming_providers() -> None:
+    class NonStreamingProvider:
+        name = "non-streaming"
+
+        def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ProviderResponse:
+            return ProviderResponse(message=Message.assistant("whole answer at once"))
+
+    deltas: list[str] = []
+    result = Agent("a", NonStreamingProvider()).run("x", on_delta=deltas.append)
+    assert deltas == ["whole answer at once"]
+    assert result.output == "whole answer at once"

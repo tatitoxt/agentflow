@@ -238,3 +238,103 @@ def test_provider_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(provider_from_env("groq"), GroqProvider)
     with pytest.raises(ConfigurationError, match="unknown provider"):
         provider_from_env("mystery")
+
+
+def sse(*events: dict[str, Any]) -> httpx.Response:
+    body = "".join(f"data: {json.dumps(e)}\n\n" for e in events)
+    return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+
+def test_openai_stream_reassembles_text_and_tool_calls() -> None:
+    reply = sse(
+        {"model": "gpt-test", "choices": [{"delta": {"role": "assistant", "content": "Hel"}}]},
+        {"choices": [{"delta": {"content": "lo"}}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "get_weather", "arguments": '{"cit'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": 'y": "Lima"}'}}]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+        {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+    )
+    provider = OpenAIProvider(api_key="k", client=Recorder(reply).client())
+    deltas: list[str] = []
+    response = provider.stream([Message.user("x")], [SPEC], deltas.append)
+    assert deltas == ["Hel", "lo"]
+    assert response.message.content == "Hello"
+    assert response.message.tool_calls == [
+        ToolCall(id="c1", name="get_weather", arguments={"city": "Lima"})
+    ]
+    assert response.stop_reason == "tool_calls"
+    assert response.usage.input_tokens == 9 and response.usage.output_tokens == 4
+
+
+def test_openai_stream_sends_stream_options() -> None:
+    rec = Recorder(sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}))
+    provider = OpenAIProvider(api_key="k", client=rec.client())
+    provider.stream([Message.user("x")], [])
+    body = rec.body()
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+
+
+def test_anthropic_stream_reassembles_blocks() -> None:
+    reply = sse(
+        {
+            "type": "message_start",
+            "message": {"model": "claude-test", "usage": {"input_tokens": 7}},
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi "}},
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "there"},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "t1", "name": "get_weather"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"city":"Quito"}'},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 12},
+        },
+    )
+    provider = AnthropicProvider(api_key="k", client=Recorder(reply).client())
+    deltas: list[str] = []
+    response = provider.stream([Message.user("x")], [SPEC], deltas.append)
+    assert deltas == ["Hi ", "there"]
+    assert response.message.content == "Hi there"
+    assert response.message.tool_calls == [
+        ToolCall(id="t1", name="get_weather", arguments={"city": "Quito"})
+    ]
+    assert response.stop_reason == "tool_use"
+    assert response.usage.input_tokens == 7 and response.usage.output_tokens == 12

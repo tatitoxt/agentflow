@@ -233,8 +233,15 @@ class Agent:
         *,
         history: Sequence[Message] = (),
         tracer: Tracer | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> RunResult:
-        """Run the loop until a final answer, a stop condition or ``max_steps``."""
+        """Run the loop until a final answer, a stop condition or ``max_steps``.
+
+        When ``on_delta`` is given and the provider supports streaming
+        (:class:`StreamingProvider`), each assistant text fragment is passed to
+        the callback as it arrives (and traced as ``provider_delta``). Providers
+        without streaming fall back to one callback with the whole response.
+        """
         parent = _current_run.get()
         tracer = tracer or (parent.tracer if parent else None) or self.tracer or Tracer()
         run_id = self.id_factory()
@@ -295,7 +302,16 @@ class Agent:
                         state.messages = messages
                 emit("provider_request", step, provider=self.provider.name, messages=len(messages))
                 try:
-                    response = self.provider.complete(list(messages), specs)
+                    if on_delta is not None and hasattr(self.provider, "stream"):
+                        def relay(text: str, *, _step: int = step) -> None:
+                            emit("provider_delta", _step, text=text)
+                            on_delta(text)
+
+                        response = self.provider.stream(list(messages), specs, relay)
+                    else:
+                        response = self.provider.complete(list(messages), specs)
+                        if on_delta is not None and response.message.content:
+                            on_delta(response.message.content)
                 except ProviderError as exc:
                     emit("run_error", step, error=type(exc).__name__, message=str(exc))
                     raise
