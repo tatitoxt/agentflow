@@ -190,3 +190,64 @@ def test_parallel_stop_still_raises_on_executed_tool_failure() -> None:
     )
     with pytest.raises(ToolExecutionError):
         agent.run("x")
+
+
+def test_stream_failure_after_chunks_is_not_retried() -> None:
+    calls = 0
+
+    class Broken(httpx.SyncByteStream):
+        def __iter__(self) -> Any:
+            yield _sse(_delta("Hel"))[: -len(b"data: [DONE]\n\n")]
+            raise httpx.ReadError("connection reset")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, stream=Broken())
+
+    with pytest.raises(ProviderError, match="stream failed"):
+        Agent("a", _openai(handler)).run("x", on_delta=lambda _: None)
+    assert calls == 1
+
+
+def test_recording_stream_falls_back_to_complete(tmp_path: Any) -> None:
+    class CompleteOnly:
+        name = "complete-only"
+
+        def complete(self, messages: Any, tools: Any) -> Any:
+            return FakeProvider(["whole"]).complete(messages, tools)
+
+    deltas: list[str] = []
+    recorder = RecordingProvider(CompleteOnly(), tmp_path / "rec.jsonl")
+    assert Agent("a", recorder).run("x", on_delta=deltas.append).output == "whole"
+    assert deltas == ["whole"]
+
+
+def test_sync_tools_may_use_asyncio_run_inside_agent_run() -> None:
+    async def fetch() -> str:
+        return "async ok"
+
+    @tool
+    def uses_asyncio() -> str:
+        """Run a coroutine from a sync tool."""
+        return asyncio.run(fetch())
+
+    provider = FakeProvider([FakeProvider.tool_call("uses_asyncio"), "done"])
+    result = Agent("a", provider, tools=[uses_asyncio]).run("x")
+    assert result.tool_results[0].content == "async ok"
+
+
+def test_structured_repairs_stay_on_the_caller_thread() -> None:
+    threads: list[int] = []
+
+    @tool
+    def where() -> str:
+        """Record the executing thread."""
+        threads.append(threading.get_ident())
+        return "ok"
+
+    provider = FakeProvider(
+        [FakeProvider.tool_call("where"), "bad", FakeProvider.tool_call("where"), '{"value": 1}']
+    )
+    Agent("a", provider, tools=[where]).run_structured("x", schema=Answer)
+    assert threads == [threading.get_ident()] * 2

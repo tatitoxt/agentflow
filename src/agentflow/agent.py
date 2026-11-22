@@ -198,10 +198,20 @@ def _run_coro_sync(coro: Coroutine[Any, Any, _T]) -> _T:
 
 
 async def _offload(blocking: bool, fn: Callable[..., _T], *args: Any) -> _T:
-    """Call ``fn`` inline in blocking mode, else on a thread so the loop never blocks."""
-    if blocking:
+    """Call ``fn`` inline in blocking mode, else on a thread so the loop never blocks.
+
+    Inline calls run with the private loop hidden, so sync code inside them
+    (``asyncio.run`` in a tool, a nested ``Agent.run`` handoff) behaves exactly
+    as it would on a plain thread.
+    """
+    if not blocking:
+        return await asyncio.to_thread(fn, *args)
+    loop = asyncio.get_running_loop()
+    asyncio._set_running_loop(None)
+    try:
         return fn(*args)
-    return await asyncio.to_thread(fn, *args)
+    finally:
+        asyncio._set_running_loop(loop)
 
 
 def _prefers_async(provider: Any) -> bool:
@@ -411,7 +421,6 @@ class Agent:
         one callback with the whole response.
         """
         blocking = _blocking.get()
-        _blocking.set(False)  # nested coroutines started from here are not sync-driven
         parent = _current_run.get()
         tracer = tracer or (parent.tracer if parent else None) or self.tracer or Tracer()
         run_id = self.id_factory()
