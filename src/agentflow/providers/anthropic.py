@@ -209,6 +209,8 @@ class _StreamAccumulator:
             )
 
     def finish(self) -> ProviderResponse:
+        if self._stop_reason is None:
+            raise ProviderError("stream ended before message_delta carried a stop_reason")
         calls = []
         for index in sorted(self._tool_blocks):
             block = self._tool_blocks[index]

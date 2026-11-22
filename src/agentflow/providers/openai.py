@@ -213,6 +213,8 @@ class _StreamAccumulator:
                 frag["arguments"] += function["arguments"]
 
     def finish(self) -> ProviderResponse:
+        if self._finish_reason is None:
+            raise ProviderError("stream ended before a finish_reason was received")
         calls = [
             ToolCall(
                 id=frag["id"] or f"call_{i}",
@@ -257,6 +259,8 @@ class OllamaProvider(OpenAIProvider):
     def from_env(cls, model: str | None = None, **kwargs: Any) -> OllamaProvider:
         return cls(
             model=model or os.environ.get("AGENTFLOW_MODEL"),
-            base_url=os.environ.get("OLLAMA_BASE_URL") or cls.default_base_url,
+            base_url=kwargs.pop("base_url", None)
+            or os.environ.get("OLLAMA_BASE_URL")
+            or cls.default_base_url,
             **kwargs,
         )

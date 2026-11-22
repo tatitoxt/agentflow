@@ -86,6 +86,10 @@ class HTTPProvider:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=timeout)
+        # A caller-supplied client (custom transport, proxy, auth) must see every
+        # request, so the agent loop uses the sync methods instead of a default
+        # AsyncClient.
+        self.prefer_sync = client is not None
         self._timeout = timeout
         self._aclient: httpx.AsyncClient | None = None
         self._headers = headers
@@ -124,31 +128,58 @@ class HTTPProvider:
         assert last_error is not None
         raise last_error
 
-    def _stream_events(self, path: str, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        """POST with ``stream`` and yield each ``data:`` SSE event as parsed JSON."""
-        url = f"{self.base_url}{path}"
+    def _parse_sse(self, line: str) -> dict[str, Any] | None:
+        if not line.startswith("data:"):
+            return None
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            return None
         try:
-            with self._client.stream("POST", url, json=payload, headers=self._headers) as response:
-                if response.status_code != 200:
-                    response.read()
-                    raise ProviderError(
-                        f"{self.name}: HTTP {response.status_code}: {response.text[:500]}",
-                        status_code=response.status_code,
-                    )
-                for line in response.iter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        event = json.loads(data)
-                    except ValueError:
-                        continue
-                    if isinstance(event, dict):
-                        yield event
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.name}: stream failed: {exc}") from exc
+            event = json.loads(data)
+        except ValueError:
+            return None
+        if not isinstance(event, dict):
+            return None
+        if event.get("type") == "error" or "error" in event:
+            raise ProviderError(f"{self.name}: stream error: {json.dumps(event)[:500]}")
+        return event
+
+    def _stream_status_error(self, response: httpx.Response) -> ProviderError:
+        return ProviderError(
+            f"{self.name}: HTTP {response.status_code}: {response.text[:500]}",
+            status_code=response.status_code,
+        )
+
+    def _stream_events(self, path: str, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """POST with ``stream`` and yield each ``data:`` SSE event as parsed JSON.
+
+        Retryable statuses and connection failures are retried like ``_post``
+        until the stream opens; an in-band error event raises ProviderError.
+        """
+        url = f"{self.base_url}{path}"
+        last_error: ProviderError | None = None
+        for attempt in range(self.max_retries + 1):
+            if attempt and self.backoff:
+                time.sleep(self.backoff * 2 ** (attempt - 1))
+            try:
+                with self._client.stream(
+                    "POST", url, json=payload, headers=self._headers
+                ) as response:
+                    if response.status_code != 200:
+                        response.read()
+                        last_error = self._stream_status_error(response)
+                        if response.status_code in RETRYABLE_STATUS:
+                            continue
+                        raise last_error
+                    for line in response.iter_lines():
+                        if (event := self._parse_sse(line)) is not None:
+                            yield event
+                    return
+            except httpx.HTTPError as exc:
+                last_error = ProviderError(f"{self.name}: stream failed: {exc}")
+                continue
+        assert last_error is not None
+        raise last_error
 
     def _get_aclient(self) -> httpx.AsyncClient:
         if self._aclient is None:
@@ -195,28 +226,29 @@ class HTTPProvider:
         """Async mirror of ``_stream_events``: yields each ``data:`` SSE event."""
         url = f"{self.base_url}{path}"
         client = self._get_aclient()
-        try:
-            async with client.stream("POST", url, json=payload, headers=self._headers) as response:
-                if response.status_code != 200:
-                    await response.aread()
-                    raise ProviderError(
-                        f"{self.name}: HTTP {response.status_code}: {response.text[:500]}",
-                        status_code=response.status_code,
-                    )
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        event = json.loads(data)
-                    except ValueError:
-                        continue
-                    if isinstance(event, dict):
-                        yield event
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.name}: stream failed: {exc}") from exc
+        last_error: ProviderError | None = None
+        for attempt in range(self.max_retries + 1):
+            if attempt and self.backoff:
+                await asyncio.sleep(self.backoff * 2 ** (attempt - 1))
+            try:
+                async with client.stream(
+                    "POST", url, json=payload, headers=self._headers
+                ) as response:
+                    if response.status_code != 200:
+                        await response.aread()
+                        last_error = self._stream_status_error(response)
+                        if response.status_code in RETRYABLE_STATUS:
+                            continue
+                        raise last_error
+                    async for line in response.aiter_lines():
+                        if (event := self._parse_sse(line)) is not None:
+                            yield event
+                    return
+            except httpx.HTTPError as exc:
+                last_error = ProviderError(f"{self.name}: stream failed: {exc}")
+                continue
+        assert last_error is not None
+        raise last_error
 
     def close(self) -> None:
         self._client.close()
