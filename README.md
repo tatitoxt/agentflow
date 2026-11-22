@@ -253,12 +253,14 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 - **RedisVectorStore needs Redis Stack (RediSearch)** — use `PlainRedisVectorStore` for a
   module-free Redis. The RediSearch index dimension is fixed at creation; changing embedders
   requires a new index name.
-- Synchronous API only; tools run concurrently only within a step
+- `arun()` (async) exists for agents whose providers implement `acomplete`/`astream`;
+  the synchronous `run()` is the primary API. Tools run concurrently only within a step
   (`max_tool_workers`) and only when the model requests more than one.
 - `PlainRedisVectorStore` scans records in Python and `PgVectorStore` scans exactly unless
   `ensure_index()` ran — fine for small memories; use `RedisVectorStore` (RediSearch KNN)
   or an approximate index for thousands of records.
-- No benchmarks were run; no performance claims are made.
+- Benchmarks run locally (see [docs/benchmarks.md](docs/benchmarks.md): ~3.8k agent-loop
+  runs/sec, pgvector HNSW ~3.3x faster than exact k-NN); no soak or security audit.
 
 ## License
 
