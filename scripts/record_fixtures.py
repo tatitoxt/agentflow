@@ -105,10 +105,12 @@ def main() -> None:
                     ).model_copy(
                         update={
                             "tool_calls": [
-                                FakeProvider.tool_call("add", call_id="c-add", a=2, b=3)
-                                .tool_calls[0],
-                                FakeProvider.tool_call("mul", call_id="c-mul", a=4, b=5)
-                                .tool_calls[0],
+                                FakeProvider.tool_call("add", call_id="c-add", a=2, b=3).tool_calls[
+                                    0
+                                ],
+                                FakeProvider.tool_call("mul", call_id="c-mul", a=4, b=5).tool_calls[
+                                    0
+                                ],
                             ]
                         }
                     )

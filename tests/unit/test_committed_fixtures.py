@@ -50,9 +50,7 @@ def mul(a: int, b: int) -> str:
 TOOLS = {"get_weather": get_weather, "add": add, "mul": mul}
 
 
-@pytest.mark.parametrize(
-    "fixture", sorted(p.stem for p in FIXTURES.glob("*.jsonl"))
-)
+@pytest.mark.parametrize("fixture", sorted(p.stem for p in FIXTURES.glob("*.jsonl")))
 def test_committed_fixture_replays(fixture: str) -> None:
     manifest = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))
     meta = manifest[fixture]
