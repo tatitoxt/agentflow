@@ -158,6 +158,7 @@ class HTTPProvider:
         """
         url = f"{self.base_url}{path}"
         last_error: ProviderError | None = None
+        started = False
         for attempt in range(self.max_retries + 1):
             if attempt and self.backoff:
                 time.sleep(self.backoff * 2 ** (attempt - 1))
@@ -173,10 +174,13 @@ class HTTPProvider:
                         raise last_error
                     for line in response.iter_lines():
                         if (event := self._parse_sse(line)) is not None:
+                            started = True
                             yield event
                     return
             except httpx.HTTPError as exc:
                 last_error = ProviderError(f"{self.name}: stream failed: {exc}")
+                if started:  # chunks already reached the caller; a retry would merge responses
+                    raise last_error from exc
                 continue
         assert last_error is not None
         raise last_error
@@ -227,6 +231,7 @@ class HTTPProvider:
         url = f"{self.base_url}{path}"
         client = self._get_aclient()
         last_error: ProviderError | None = None
+        started = False
         for attempt in range(self.max_retries + 1):
             if attempt and self.backoff:
                 await asyncio.sleep(self.backoff * 2 ** (attempt - 1))
@@ -242,10 +247,13 @@ class HTTPProvider:
                         raise last_error
                     async for line in response.aiter_lines():
                         if (event := self._parse_sse(line)) is not None:
+                            started = True
                             yield event
                     return
             except httpx.HTTPError as exc:
                 last_error = ProviderError(f"{self.name}: stream failed: {exc}")
+                if started:  # chunks already reached the caller; a retry would merge responses
+                    raise last_error from exc
                 continue
         assert last_error is not None
         raise last_error
