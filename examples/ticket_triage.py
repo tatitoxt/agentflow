@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agentflow import Agent, Message, ToolSpec, tool
-from agentflow.providers import FakeProvider, Provider
+from agentflow.providers import FakeProvider, Provider, RecordingProvider
 
 CUSTOMERS: dict[str, dict[str, Any]] = json.loads(
     (Path(__file__).parent / "data" / "customers.json").read_text(encoding="utf-8")
@@ -106,11 +106,15 @@ def build_billing_agent(provider: Provider) -> Agent:
 def build_agent(provider: Provider, billing_provider: Provider | None = None) -> Agent:
     TICKETS.clear()
     if billing_provider is None:
-        billing_provider = (
-            FakeProvider(billing_policy, model="fake-billing")
-            if isinstance(getattr(provider, "inner", provider), FakeProvider)
-            else provider
-        )
+        if isinstance(provider, FakeProvider):
+            billing_provider = FakeProvider(billing_policy, model="fake-billing")
+        elif isinstance(provider, RecordingProvider) and isinstance(provider.inner, FakeProvider):
+            # record billing turns into the same fixture so replay can serve both agents
+            billing_provider = RecordingProvider(
+                FakeProvider(billing_policy, model="fake-billing"), provider.path
+            )
+        else:
+            billing_provider = provider
     billing = build_billing_agent(billing_provider)
     return Agent(
         "triage",

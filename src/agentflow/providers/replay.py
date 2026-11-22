@@ -36,7 +36,7 @@ class RecordingProvider:
 
     def __init__(self, inner: Any, path: str | Path) -> None:
         self.inner: Any = inner
-        self._path = Path(path)
+        self.path = Path(path)
         self.name = f"recording-{inner.name}"
         self.model: str | None = getattr(inner, "model", None)
         self.prefer_sync: bool = getattr(inner, "prefer_sync", False)
@@ -44,13 +44,13 @@ class RecordingProvider:
     def _record(
         self, op: str, messages: list[Message], tools: list[ToolSpec], resp: ProviderResponse
     ) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         rec = {
             "op": op,
             "request": _request_payload(messages, tools),
             "response": resp.model_dump(mode="json"),
         }
-        with self._path.open("a", encoding="utf-8") as f:
+        with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, separators=(",", ":")) + "\n")
 
     def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ProviderResponse:
@@ -64,7 +64,12 @@ class RecordingProvider:
         tools: list[ToolSpec],
         on_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        resp: ProviderResponse = self.inner.stream(messages, tools, on_delta)
+        if hasattr(self.inner, "stream"):
+            resp: ProviderResponse = self.inner.stream(messages, tools, on_delta)
+        else:
+            resp = self.inner.complete(messages, tools)
+            if on_delta is not None and resp.message.content:
+                on_delta(resp.message.content)
         self._record("stream", messages, tools, resp)
         return resp
 
