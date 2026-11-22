@@ -18,6 +18,7 @@ import json
 import random
 import sys
 import time
+import uuid
 
 from agentflow import Agent, tool
 from agentflow.providers.fake import FakeProvider
@@ -63,7 +64,7 @@ def bench_pgvector(url: str, docs: int, dim: int = 384) -> dict:
     from agentflow.memory.stores import PgVectorStore, Record
 
     rng = random.Random(42)
-    store = PgVectorStore(dim=dim, url=url, index_name=f"bench_{int(time.time())}")
+    store = PgVectorStore(dim=dim, url=url, index_name=f"bench_{uuid.uuid4().hex[:12]}")
     try:
         records = [
             Record(
@@ -120,6 +121,8 @@ def main() -> int:
     p.add_argument("--pg-url", default=None)
     p.add_argument("--json", action="store_true")
     args = p.parse_args()
+    if args.runs < 1 or args.docs < 1:
+        p.error("--runs and --docs must be positive")
 
     out: dict = {"agent_loop": bench_agent_loop(args.runs)}
     if args.pg_url:
