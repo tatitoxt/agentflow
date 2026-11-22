@@ -247,8 +247,8 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
   rule-based functions; they show the loop, tools, retrieval and handoff working, not model
   quality. Real-provider behaviour depends on the model and was not evaluated here.
 - **Real providers are not exercised against live APIs** in tests or CI; only their request /
-  response formats are tested with mocked HTTP. Streaming, vision and parallel-tool-call
-  options are not implemented.
+  response formats are tested with mocked HTTP (the opt-in `tests/live` smoke tests run
+  manually with real keys). Vision inputs are not implemented.
 - **HashingEmbedder is lexical**, not semantic: it matches overlapping words, not meaning.
 - **RedisVectorStore needs Redis Stack (RediSearch)** — use `PlainRedisVectorStore` for a
   module-free Redis. The RediSearch index dimension is fixed at creation; changing embedders
