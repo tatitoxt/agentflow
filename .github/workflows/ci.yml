@@ -42,9 +42,23 @@ jobs:
           --health-interval 2s
           --health-timeout 2s
           --health-retries 15
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: agentflow
+          POSTGRES_DB: agentflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agentflow"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
     env:
       AGENTFLOW_TEST_REDIS_URL: redis://localhost:6379/0
       AGENTFLOW_REQUIRE_REDIS: "1"
+      AGENTFLOW_TEST_PG_URL: postgresql://postgres:agentflow@localhost:5432/agentflow
+      AGENTFLOW_REQUIRE_PG: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3

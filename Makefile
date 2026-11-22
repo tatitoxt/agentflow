@@ -14,13 +14,15 @@ test:
 	uv run --frozen pytest tests/unit tests/integration
 
 redis-up:
-	docker compose up -d --wait redis
+	docker compose up -d --wait redis postgres
 
 redis-down:
 	docker compose down
 
 test-redis: redis-up
-	AGENTFLOW_TEST_REDIS_URL=redis://localhost:6379/0 AGENTFLOW_REQUIRE_REDIS=1 uv run --frozen pytest
+	AGENTFLOW_TEST_REDIS_URL=redis://localhost:6379/0 AGENTFLOW_REQUIRE_REDIS=1 \
+	AGENTFLOW_TEST_PG_URL=postgresql://postgres:agentflow@localhost:55433/agentflow AGENTFLOW_REQUIRE_PG=1 \
+	uv run --frozen pytest tests/unit tests/integration tests/e2e
 
 e2e:
 	uv run --frozen pytest tests/e2e
