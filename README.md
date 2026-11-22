@@ -71,28 +71,30 @@ you test agents without API keys.
   `provider_response`, `tool_call`, `tool_result`, `tool_error`, `handoff_start`,
   `handoff_end`, `run_end`, `run_error`) streamed to sinks; JSONL export and reload.
 - **Providers** behind one `Provider` protocol, all over `httpx` (no vendor SDKs):
-  `OpenAIProvider` (Chat Completions), `AnthropicProvider` (Messages API), `GroqProvider`
-  (OpenAI-compatible), with retry/backoff on 408/409/429/5xx, plus `FakeProvider` (scripted,
-  deterministic). Real providers are opt-in via env vars.
+  `OpenAIProvider` (Chat Completions), `AnthropicProvider` (Messages API), `GroqProvider` and
+  `OllamaProvider` (OpenAI-compatible), with retry/backoff on 408/409/429/5xx (streaming
+  included), plus `FakeProvider` (scripted, deterministic). Real providers are opt-in via env vars.
+  The sync `run()` calls providers through their sync client on the caller's thread (so a
+  `client=` you pass is always used and tools keep thread affinity); `arun()` awaits the async one.
 - **Record/replay fixtures**: `AGENTFLOW_RECORD_FILE=path.jsonl` wraps any provider
   and appends every exchange as JSONL; `AGENTFLOW_PROVIDER=replay` (with
   `AGENTFLOW_REPLAY_FILE`) serves recorded responses offline and raises when
-  the request flow diverges — regression tests against real model output
-  without API keys.
+  the request flow diverges, so recorded runs become offline regression tests. The committed
+  fixtures in `tests/fixtures/` were recorded from scripted `FakeProvider` agents, not a real model.
 - **Vector memory**: `HashingEmbedder` (offline, deterministic) or `OpenAIEmbedder` (opt-in);
   `InMemoryVectorStore`, `RedisVectorStore` (Redis Stack / RediSearch KNN index, persistent),
-  `PgVectorStore` (pgvector; `ensure_index`/`auto_index` build HNSW/IVFFlat, `configure_search` tunes recall).
-- **Cost accounting**: each provider response is priced via the table in
-  `agentflow.pricing` (longest-prefix model matching; `register_price` for custom
-  models) and accumulated into `RunResult.cost_usd`, the `provider_response` /
-  `run_end` trace events and the `cost_budget` stop condition — a run halts mid-step
-  once its estimated spend hits the cap. Unpriced models never accrue cost.
-  or `PlainRedisVectorStore` (module-free Redis) or `PgVectorStore` (Postgres + pgvector).
+  `PlainRedisVectorStore` (module-free Redis) or `PgVectorStore` (Postgres + pgvector).
   Retrieved snippets are injected into the agent context with their source. `PgVectorStore`
   searches exactly by default; `ensure_index()` adds an HNSW (or IVFFlat) cosine index and
   `configure_search()` tunes recall (`hnsw.ef_search` / `ivfflat.probes`) for large corpora.
   `auto_index(threshold=…)` builds it automatically once the table is big enough to benefit —
   below the threshold an exact scan is cheaper, so it stays index-free.
+- **Cost accounting**: each provider response is priced via the table in
+  `agentflow.pricing` (longest-prefix model matching; `register_price` for custom
+  models) and accumulated into `RunResult.cost_usd`, the `provider_response` /
+  `run_end` trace events and the `cost_budget` stop condition — a run halts mid-step
+  once its estimated spend hits the cap. Unpriced models never accrue cost; prices are a
+  hand-maintained estimate, not billing data.
 - **Multi-agent handoff**: `agent.as_tool()` exposes an agent as a tool; the child run shares
   the parent's trace and records `parent_run_id`.
 - **CLI**: `agentflow run examples/<name>.py` and `agentflow trace <file.jsonl>`.
@@ -232,21 +234,24 @@ Code map: `src/agentflow/agent.py` (loop, stop conditions, handoff), `tools.py`,
 ```bash
 make lint typecheck            # ruff check, ruff format --check, mypy --strict (src + examples)
 make test                      # unit + integration (Redis tests skip without a server)
-make test-redis                # starts Redis Stack with docker compose, runs everything incl. Redis
+make test-redis                # starts Redis Stack + Postgres/pgvector with docker compose, runs everything
 make e2e                       # spawns the real `agentflow` CLI on both examples
 make audit                     # pip-audit on the locked dependency set
 ```
 
 | Suite | Count | What it covers |
 |-------|------:|----------------|
-| `tests/unit` | 70 | tools/schemas, providers' wire formats and retries, loop, stop conditions, errors, handoff, memory, tracing, CLI, README example |
-| `tests/integration` | 4 | `RedisVectorStore` KNN, persistence across instances, clear, agent retrieval from Redis |
+| `tests/unit` | 126 | tools/schemas, providers' wire formats, retries and SSE streaming, sync/async loop, stop conditions, budgets, history trimming, structured output, record/replay, errors, handoff, memory, tracing, CLI, README example |
+| `tests/integration` | 10 | `RedisVectorStore` KNN and agent retrieval, `PlainRedisVectorStore`, `PgVectorStore` exact + HNSW/IVFFlat search |
 | `tests/e2e` | 8 | `agentflow run` / `agentflow trace` as subprocesses: outputs, exit codes, JSONL traces, tool-failure recovery, Redis-backed RAG |
-| `tests/live` | 6 | opt-in real-API smoke tests for both providers (complete/stream/`arun`); skipped without keys, run manually via the `live-smoke` workflow |
+| `tests/live` | 6 | opt-in real-API smoke tests (OpenAI, Anthropic); skipped without keys and not part of CI |
 
-Counts are from `pytest --collect-only` on this commit. CI runs all 75 on Python 3.11 and
-3.12 with a `redis/redis-stack-server` service container (`AGENTFLOW_REQUIRE_REDIS=1` makes
-Redis tests fail rather than skip), plus a `pip-audit --strict` job.
+Counts are from `pytest --collect-only` on this commit. CI runs the 144 unit, integration and
+E2E tests on Python 3.11 and 3.12 with `redis/redis-stack-server` and `pgvector/pgvector`
+service containers (`AGENTFLOW_REQUIRE_REDIS=1` / `AGENTFLOW_REQUIRE_PG=1` make those tests fail
+rather than skip), plus a `pip-audit --strict` job. The `tests/live` suite needs real API keys
+and has not been run for this release; trigger the manual `live-smoke` workflow with
+`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` secrets to run it.
 
 ## Limitations
 
@@ -254,8 +259,9 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
   rule-based functions; they show the loop, tools, retrieval and handoff working, not model
   quality. Real-provider behaviour depends on the model and was not evaluated here.
 - **Real providers are not exercised against live APIs** in tests or CI; only their request /
-  response formats are tested with mocked HTTP (the opt-in `tests/live` smoke tests run
-  manually with real keys). Vision inputs are not implemented.
+  response and SSE formats are tested with mocked HTTP. The opt-in `tests/live` smoke tests
+  exist but have not been run. `OllamaProvider` is untested against a real Ollama server.
+  Vision inputs are not implemented.
 - **HashingEmbedder is lexical**, not semantic: it matches overlapping words, not meaning.
 - **RedisVectorStore needs Redis Stack (RediSearch)** — use `PlainRedisVectorStore` for a
   module-free Redis. The RediSearch index dimension is fixed at creation; changing embedders
@@ -266,13 +272,24 @@ Redis tests fail rather than skip), plus a `pip-audit --strict` job.
 - `PlainRedisVectorStore` scans records in Python and `PgVectorStore` scans exactly unless
   `ensure_index()` ran — fine for small memories; use `RedisVectorStore` (RediSearch KNN)
   or an approximate index for thousands of records.
-- Benchmarks run locally (see [docs/benchmarks.md](docs/benchmarks.md): ~3.8k agent-loop
-  runs/sec, pgvector HNSW ~3.3x faster than exact k-NN); no soak or security audit.
+- Benchmarks are a single local micro-benchmark run (see [Benchmarks](#benchmarks)); no load,
+  soak or security testing has been done.
+
+## Benchmarks
+
+`scripts/benchmark.py` measures framework overhead with the `FakeProvider` (no API keys) and
+pgvector search latency. One run on an 8-vCPU Intel Xeon dev VM: about 2,100 two-step agent
+runs/sec (0.47 ms/run) and, at 10k random 384-dim vectors, HNSW search p50 1.14 ms vs 4.83 ms
+exact (about 4x). Numbers vary by machine; see [docs/benchmarks.md](docs/benchmarks.md) to
+reproduce.
+
+## Roadmap
+
+- Run the `live-smoke` suite against real providers and publish recorded real-model fixtures.
+- Vision/multimodal message parts.
+- Semantic local embedder option (e.g. a small ONNX model) alongside `HashingEmbedder`.
+- Packaging and a tagged release on PyPI.
 
 ## License
 
 [MIT](LICENSE) © Fausto Pastura
-
-## Benchmarks
-
-`scripts/benchmark.py` measures the agent loop without API keys (**3.8k runs/sec**, 0.26 ms/run of framework overhead) and pgvector memory latency (HNSW **3.3× faster** than exact k-NN at 10k vectors). See [docs/benchmarks.md](docs/benchmarks.md).
