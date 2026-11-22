@@ -8,10 +8,10 @@ from ..errors import ConfigurationError
 from .anthropic import AnthropicProvider
 from .base import HTTPProvider, Provider
 from .fake import FakeProvider
-from .openai import GroqProvider, OpenAIProvider
+from .openai import GroqProvider, OllamaProvider, OpenAIProvider
 from .replay import RecordingProvider, ReplayProvider
 
-PROVIDER_NAMES = ("fake", "openai", "anthropic", "groq", "replay")
+PROVIDER_NAMES = ("fake", "openai", "anthropic", "groq", "ollama", "replay")
 
 
 def provider_from_env(name: str | None = None, *, fake: Provider | None = None) -> Provider:
@@ -30,6 +30,8 @@ def provider_from_env(name: str | None = None, *, fake: Provider | None = None) 
         provider = OpenAIProvider.from_env()
     elif selected == "groq":
         provider = GroqProvider.from_env()
+    elif selected == "ollama":
+        provider = OllamaProvider.from_env()
     elif selected == "anthropic":
         provider = AnthropicProvider.from_env()
     elif selected == "replay":
@@ -48,6 +50,7 @@ __all__ = [
     "AnthropicProvider",
     "FakeProvider",
     "GroqProvider",
+    "OllamaProvider",
     "RecordingProvider",
     "ReplayProvider",
     "HTTPProvider",

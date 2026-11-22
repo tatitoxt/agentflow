@@ -236,3 +236,27 @@ class GroqProvider(OpenAIProvider):
     default_base_url = "https://api.groq.com/openai/v1"
     default_model = "llama-3.3-70b-versatile"
     api_key_env = "GROQ_API_KEY"
+
+
+class OllamaProvider(OpenAIProvider):
+    """Ollama's OpenAI-compatible endpoint — local models, no API key needed.
+
+    ``from_env`` reads ``OLLAMA_BASE_URL`` (default ``http://localhost:11434/v1``)
+    and ``AGENTFLOW_MODEL``; a key is never required since Ollama serves localhost
+    without auth (an Authorization header is still sent and ignored by Ollama).
+    """
+
+    name = "ollama"
+    default_base_url = "http://localhost:11434/v1"
+    default_model = "llama3.2"
+
+    def __init__(self, *, api_key: str | None = None, **kwargs: Any) -> None:
+        super().__init__(api_key=api_key or "ollama", **kwargs)
+
+    @classmethod
+    def from_env(cls, model: str | None = None, **kwargs: Any) -> OllamaProvider:
+        return cls(
+            model=model or os.environ.get("AGENTFLOW_MODEL"),
+            base_url=os.environ.get("OLLAMA_BASE_URL") or cls.default_base_url,
+            **kwargs,
+        )

@@ -130,6 +130,7 @@ fake|openai|anthropic|groq|replay`. Exit codes: `0` finished, `1` error, `3` sto
 
 ```bash
 export AGENTFLOW_PROVIDER=anthropic ANTHROPIC_API_KEY=...   # or openai + OPENAI_API_KEY, groq + GROQ_API_KEY
+# or a local model, no key needed: AGENTFLOW_PROVIDER=ollama (OLLAMA_BASE_URL, AGENTFLOW_MODEL)
 export AGENTFLOW_MODEL=...                                   # optional model override
 uv run agentflow run examples/research_assistant.py -i "Is SSO available?"
 ```

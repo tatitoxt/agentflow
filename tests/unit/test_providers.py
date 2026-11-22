@@ -12,6 +12,7 @@ from agentflow.providers import (
     AnthropicProvider,
     FakeProvider,
     GroqProvider,
+    OllamaProvider,
     OpenAIProvider,
     provider_from_env,
 )
@@ -236,8 +237,29 @@ def test_provider_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(provider_from_env("anthropic"), AnthropicProvider)
     monkeypatch.setenv("GROQ_API_KEY", "gk")
     assert isinstance(provider_from_env("groq"), GroqProvider)
+    assert isinstance(provider_from_env("ollama"), OllamaProvider)
     with pytest.raises(ConfigurationError, match="unknown provider"):
         provider_from_env("mystery")
+
+
+def test_ollama_needs_no_key_and_hits_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("OLLAMA_BASE_URL", "AGENTFLOW_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    provider = OllamaProvider.from_env()
+    assert provider.base_url == "http://localhost:11434/v1"
+    assert provider.model == "llama3.2"
+
+    recorder = Recorder(openai_reply(content="hola"))
+    provider = OllamaProvider(client=recorder.client())
+    response = provider.complete([Message.user("hi")], [])
+    assert response.message.content == "hola"
+    assert recorder.requests[0].url == "http://localhost:11434/v1/chat/completions"
+
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434/v1")
+    monkeypatch.setenv("AGENTFLOW_MODEL", "qwen3")
+    remote = OllamaProvider.from_env()
+    assert remote.base_url == "http://gpu-box:11434/v1"
+    assert remote.model == "qwen3"
 
 
 def sse(*events: dict[str, Any]) -> httpx.Response:
