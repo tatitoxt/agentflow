@@ -267,6 +267,10 @@ class PgVectorStore:
             raise ImportError("PgVectorStore needs `pip install agentflow[postgres]`") from exc
         if not index_name.isidentifier():
             raise ValueError(f"index_name must be a valid SQL identifier, got {index_name!r}")
+        # Postgres truncates identifiers at 63 bytes; the longest derived name is
+        # "agentflow_<index>_ivfflat_idx", so keep every name below that limit.
+        if len(f"agentflow_{index_name}_ivfflat_idx".encode()) > 63:
+            raise ValueError(f"index_name {index_name!r} is too long for Postgres identifiers")
         self.dim = dim
         self.index_name = index_name
         self.table = f"agentflow_{index_name}"
@@ -345,7 +349,8 @@ class PgVectorStore:
         """Name of the existing ANN index for ``method``, or None."""
         name = f"{self.table}_{method}_idx"
         row = self.conn.execute(
-            "SELECT indexname FROM pg_indexes WHERE tablename = %s AND indexname = %s",
+            "SELECT indexname FROM pg_indexes"
+            " WHERE schemaname = current_schema() AND tablename = %s AND indexname = %s",
             (self.table, name),
         ).fetchone()
         return str(row[0]) if row else None
