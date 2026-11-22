@@ -7,7 +7,6 @@ import contextvars
 import json
 import queue
 import re
-import sys
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
@@ -169,20 +168,46 @@ _current_run: contextvars.ContextVar[_RunContext | None] = contextvars.ContextVa
 _T = TypeVar("_T")
 
 
-def _run_coro_sync(coro: Coroutine[Any, Any, _T]) -> _T:
-    """Drive a coroutine to completion on a private event loop in a worker
-    thread, copying contextvars so nested ``arun`` calls keep their parent.
+_blocking: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agentflow_blocking", default=False
+)
+"""True while a coroutine is driven by the sync API: providers, tools, memory
+and summarizers are then called inline on the caller's thread."""
 
-    Using a thread (rather than ``asyncio.run`` inline) makes it legal to call
-    ``Agent.run`` from inside a running event loop.
+
+def _run_coro_sync(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Drive a coroutine to completion for the synchronous API.
+
+    Without a running loop, the coroutine runs inline on the caller's thread,
+    so tools keep thread affinity (e.g. SQLite connections) and providers use
+    their sync HTTP client. Inside a running loop it runs on a private loop in
+    a worker thread, copying contextvars so nested runs keep their parent.
     """
-    ctx = contextvars.copy_context()
 
     def runner() -> _T:
-        return ctx.run(asyncio.run, coro)
+        _blocking.set(True)
+        return asyncio.run(coro)
 
+    ctx = contextvars.copy_context()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return ctx.run(runner)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(runner).result()
+        return pool.submit(ctx.run, runner).result()
+
+
+async def _offload(blocking: bool, fn: Callable[..., _T], *args: Any) -> _T:
+    """Call ``fn`` inline in blocking mode, else on a thread so the loop never blocks."""
+    if blocking:
+        return fn(*args)
+    return await asyncio.to_thread(fn, *args)
+
+
+def _prefers_async(provider: Any) -> bool:
+    return isinstance(provider, AsyncProvider | AsyncStreamingProvider) and not getattr(
+        provider, "prefer_sync", False
+    )
 
 
 def _new_run_id() -> str:
@@ -214,13 +239,24 @@ def _trim_history(messages: list[Message], limit: int) -> tuple[list[Message], l
 
 def _insert_summary(messages: list[Message], summary: str) -> list[Message]:
     """Insert a summary system message after the head (before the first
-    assistant message), where it survives future trims.
+    assistant message), where it survives future trims. An earlier summary
+    note is merged into the new one so repeated trims keep a single note.
     """
     first_assistant = next(
         (i for i, m in enumerate(messages) if m.role == "assistant"), len(messages)
     )
-    note = Message.system(f"Earlier context (summarized):\n{summary}")
-    return messages[:first_assistant] + [note] + messages[first_assistant:]
+    head = messages[:first_assistant]
+    earlier = [m.content[len(_SUMMARY_PREFIX) :] for m in head if _is_summary(m)]
+    head = [m for m in head if not _is_summary(m)]
+    note = Message.system(_SUMMARY_PREFIX + "\n".join([*earlier, summary]))
+    return [*head, note, *messages[first_assistant:]]
+
+
+_SUMMARY_PREFIX = "Earlier context (summarized):\n"
+
+
+def _is_summary(message: Message) -> bool:
+    return message.role == "system" and message.content.startswith(_SUMMARY_PREFIX)
 
 
 def _preview(text: str, limit: int = 500) -> str:
@@ -288,6 +324,55 @@ class Agent:
             lines.append(f"[{i}] (source: {source}) {hit.text}")
         return Message.system("\n".join(lines))
 
+    async def _call_provider(
+        self,
+        messages: list[Message],
+        specs: list[Any],
+        step: int,
+        emit: Callable[..., None],
+        on_delta: Callable[[str], None] | None,
+        blocking: bool,
+    ) -> ProviderResponse:
+        provider: Any = self.provider
+        use_async = not blocking and _prefers_async(provider)
+        if not use_async and not isinstance(provider, Provider):
+            use_async = True  # async-only provider: nothing sync to call
+
+        def relay(text: str) -> None:
+            emit("provider_delta", step, text=text)
+            if on_delta is not None:
+                on_delta(text)
+
+        if on_delta is not None:
+            if use_async and isinstance(provider, AsyncStreamingProvider):
+                return await provider.astream(messages, specs, relay)
+            if not use_async and isinstance(provider, StreamingProvider):
+                return await _offload(blocking, provider.stream, messages, specs, relay)
+        if use_async and isinstance(provider, AsyncProvider):
+            response = await provider.acomplete(messages, specs)
+        else:
+            response = await _offload(blocking, provider.complete, messages, specs)
+        if on_delta is not None and response.message.content:
+            relay(response.message.content)
+        return response
+
+    def _trace_result(self, emit: Callable[..., None], step: int, result: ToolResult) -> None:
+        call = result.call
+        if result.is_error:
+            emit(
+                "tool_error",
+                step,
+                id=call.id,
+                name=call.name,
+                error=type(result.error).__name__,
+                message=str(result.error),
+            )
+            if self.raise_on_tool_error and result.error is not None:
+                emit("run_error", step, error=type(result.error).__name__)
+                raise result.error
+        else:
+            emit("tool_result", step, id=call.id, name=call.name, content=_preview(result.content))
+
     def run(
         self,
         input: str,
@@ -325,6 +410,8 @@ class Agent:
         traced as ``provider_delta``). Providers without streaming fall back to
         one callback with the whole response.
         """
+        blocking = _blocking.get()
+        _blocking.set(False)  # nested coroutines started from here are not sync-driven
         parent = _current_run.get()
         tracer = tracer or (parent.tracer if parent else None) or self.tracer or Tracer()
         run_id = self.id_factory()
@@ -340,7 +427,7 @@ class Agent:
         if self.instructions:
             messages.append(Message.system(self.instructions))
         messages.extend(history)
-        context = self._context_message(input, tracer, run_id)
+        context = await _offload(blocking, self._context_message, input, tracer, run_id)
         if context is not None:
             messages.append(context)
         messages.append(Message.user(input))
@@ -358,7 +445,7 @@ class Agent:
                     if dropped:
                         if self.summarizer is not None:
                             try:
-                                summary = await asyncio.to_thread(self.summarizer, dropped)
+                                summary = await _offload(blocking, self.summarizer, dropped)
                             except Exception as exc:
                                 emit(
                                     "history_summarize_error",
@@ -385,29 +472,9 @@ class Agent:
                         state.messages = messages
                 emit("provider_request", step, provider=self.provider.name, messages=len(messages))
                 try:
-                    provider = self.provider
-                    if on_delta is not None and isinstance(
-                        provider, AsyncStreamingProvider | StreamingProvider
-                    ):
-
-                        def relay(text: str, *, _step: int = step) -> None:
-                            emit("provider_delta", _step, text=text)
-                            on_delta(text)
-
-                        if isinstance(provider, AsyncStreamingProvider):
-                            response = await provider.astream(list(messages), specs, relay)
-                        else:
-                            response = await asyncio.to_thread(
-                                provider.stream, list(messages), specs, relay
-                            )
-                    elif isinstance(provider, AsyncProvider):
-                        response = await provider.acomplete(list(messages), specs)
-                        if on_delta is not None and response.message.content:
-                            on_delta(response.message.content)
-                    else:
-                        response = await asyncio.to_thread(provider.complete, list(messages), specs)
-                        if on_delta is not None and response.message.content:
-                            on_delta(response.message.content)
+                    response = await self._call_provider(
+                        list(messages), specs, step, emit, on_delta, blocking
+                    )
                 except ProviderError as exc:
                     emit("run_error", step, error=type(exc).__name__, message=str(exc))
                     raise
@@ -488,31 +555,12 @@ class Agent:
                             name=call.name,
                             arguments=call.arguments,
                         )
-                        result = await asyncio.to_thread(self.tools.execute, call)
+                        result = await _offload(blocking, self.tools.execute, call)
                     state.tool_results.append(result)
                     messages.append(
                         Message.tool(call.id, call.name, result.content, is_error=result.is_error)
                     )
-                    if result.is_error:
-                        emit(
-                            "tool_error",
-                            step,
-                            id=call.id,
-                            name=call.name,
-                            error=type(result.error).__name__,
-                            message=str(result.error),
-                        )
-                        if self.raise_on_tool_error and result.error is not None:
-                            emit("run_error", step, error=type(result.error).__name__)
-                            raise result.error
-                    else:
-                        emit(
-                            "tool_result",
-                            step,
-                            id=call.id,
-                            name=call.name,
-                            content=_preview(result.content),
-                        )
+                    self._trace_result(emit, step, result)
                     reason = next((r for c in self.stop_conditions if (r := c(state))), None)
                     if reason:
                         output, stop_reason = result.content, reason
@@ -529,6 +577,7 @@ class Agent:
                                         is_error=ran.is_error,
                                     )
                                 )
+                                self._trace_result(emit, step, ran)
                             else:
                                 messages.append(
                                     Message.tool(
@@ -541,10 +590,11 @@ class Agent:
                         break
                 if reason:
                     break
+        except BaseException:
+            stop_reason = "error"
+            raise
         finally:
             _current_run.reset(token)
-            if sys.exc_info()[0] is not None:
-                stop_reason = "error"
             emit(
                 "run_end",
                 state.step,
@@ -623,7 +673,7 @@ class Agent:
                     attempt=attempts,
                     error=errors[:500],
                 )
-                if attempts > max_repairs:
+                if attempts > max_repairs or result.stop_reason != "final_answer":
                     raise StructuredOutputError(
                         f"final answer did not match schema {schema.__name__} "
                         f"after {attempts} attempt(s)",
@@ -633,7 +683,9 @@ class Agent:
                 repair = (
                     "Your previous answer could not be validated. "
                     f"Reply with ONLY a JSON object matching schema {schema.__name__} — "
-                    f"no markdown fences, no commentary.\n\nValidation errors:\n{errors[:2000]}"
+                    "no markdown fences, no commentary.\n\nJSON schema:\n"
+                    f"{json.dumps(schema.model_json_schema())}"
+                    f"\n\nValidation errors:\n{errors[:2000]}"
                 )
                 tracer.emit(
                     "structured_repair",
@@ -641,7 +693,14 @@ class Agent:
                     agent=self.name,
                     attempt=attempts,
                 )
-                result = await self.arun(repair, history=result.messages, on_delta=on_delta)
+                history_for_repair = result.messages
+                if self.instructions and history_for_repair[:1] == [
+                    Message.system(self.instructions)
+                ]:
+                    history_for_repair = history_for_repair[1:]  # arun re-adds instructions
+                result = await self.arun(
+                    repair, history=history_for_repair, tracer=tracer, on_delta=on_delta
+                )
                 continue
             tracer.emit(
                 "structured_parsed",
@@ -672,18 +731,22 @@ class Agent:
         preview, ``usage``, ``cost_usd``). A provider or tool error ends the
         stream and re-raises after the recorded events have been yielded.
         """
-        events: asyncio.Queue[Event | None] = asyncio.Queue()
-        tracer = tracer or Tracer()
-        sink = events.put_nowait
-        tracer.sinks.append(sink)
-
-        async def drive() -> None:
-            try:
-                await self.arun(input, history=history, tracer=tracer, on_delta=on_delta)
-            finally:
-                events.put_nowait(None)
+        run_tracer = tracer or self.tracer or Tracer()
 
         async def gen() -> AsyncIterator[Event]:
+            events: asyncio.Queue[Event | None] = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def sink(event: Event | None) -> None:
+                loop.call_soon_threadsafe(events.put_nowait, event)
+
+            async def drive() -> None:
+                try:
+                    await self.arun(input, history=history, tracer=run_tracer, on_delta=on_delta)
+                finally:
+                    sink(None)
+
+            run_tracer.sinks.append(sink)
             task = asyncio.ensure_future(drive())
             try:
                 while True:
@@ -693,8 +756,8 @@ class Agent:
                     yield event
                 await task  # re-raise a provider/tool error once the stream drains
             finally:
-                if sink in tracer.sinks:
-                    tracer.sinks.remove(sink)
+                if sink in run_tracer.sinks:
+                    run_tracer.sinks.remove(sink)
                 if not task.done():
                     task.cancel()
 
@@ -716,13 +779,12 @@ class Agent:
         async version.
         """
         events: queue.Queue[Event | BaseException | None] = queue.Queue()
-        tracer = tracer or Tracer()
+        run_tracer = tracer or self.tracer or Tracer()
         sink = events.put_nowait
-        tracer.sinks.append(sink)
 
         def drive() -> None:
             try:
-                self.run(input, history=history, tracer=tracer, on_delta=on_delta)
+                self.run(input, history=history, tracer=run_tracer, on_delta=on_delta)
             except BaseException as exc:
                 events.put_nowait(exc)
             finally:
@@ -731,6 +793,7 @@ class Agent:
         worker = threading.Thread(target=drive, daemon=True)
 
         def gen() -> Iterator[Event]:
+            run_tracer.sinks.append(sink)
             worker.start()
             try:
                 while True:
@@ -741,8 +804,8 @@ class Agent:
                         raise item
                     yield item
             finally:
-                if sink in tracer.sinks:
-                    tracer.sinks.remove(sink)
+                if sink in run_tracer.sinks:
+                    run_tracer.sinks.remove(sink)
 
         return gen()
 
