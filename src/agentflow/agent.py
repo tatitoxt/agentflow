@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import queue
+import re
 import sys
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from .errors import ProviderError
+from pydantic import BaseModel
+
+from .errors import ProviderError, StructuredOutputError
 from .pricing import estimate_cost
 from .providers.base import (
     AsyncProvider,
@@ -116,6 +120,37 @@ class RunResult:
     tool_results: list[ToolResult]
     usage: Usage
     cost_usd: float = 0.0
+
+
+_M = TypeVar("_M", bound="BaseModel")
+
+
+@dataclass
+class StructuredResult(Generic[_M]):
+    """The outcome of :meth:`Agent.arun_structured`: the final (winning) run
+    plus its schema-validated answer and how many parse attempts it took."""
+
+    run: RunResult
+    parsed: _M
+    attempts: int
+
+
+def _extract_json_object(text: str) -> Any:
+    """Best-effort JSON extraction: whole text first, then the first {...} span."""
+    stripped = text.strip()
+    stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", stripped.strip(), flags=re.MULTILINE)
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(stripped[start : end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    raise ValueError("no JSON object found in the answer")
 
 
 @dataclass(frozen=True)
@@ -529,6 +564,93 @@ class Agent:
             usage=usage,
             cost_usd=state.cost_usd,
         )
+
+    def run_structured(
+        self,
+        input: str,
+        *,
+        schema: type[_M],
+        max_repairs: int = 2,
+        history: Sequence[Message] = (),
+        tracer: Tracer | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> StructuredResult[_M]:
+        """Synchronous wrapper around :meth:`arun_structured`."""
+        return _run_coro_sync(
+            self.arun_structured(
+                input,
+                schema=schema,
+                max_repairs=max_repairs,
+                history=history,
+                tracer=tracer,
+                on_delta=on_delta,
+            )
+        )
+
+    async def arun_structured(
+        self,
+        input: str,
+        *,
+        schema: type[_M],
+        max_repairs: int = 2,
+        history: Sequence[Message] = (),
+        tracer: Tracer | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> StructuredResult[_M]:
+        """Run the loop, then validate the final answer against ``schema``.
+
+        The final answer is parsed as JSON (markdown fences and surrounding
+        prose are tolerated) and validated with ``schema.model_validate``. On
+        failure the agent gets a repair turn — its whole conversation plus a
+        user message listing the validation errors — up to ``max_repairs``
+        times. A still-invalid answer raises :class:`StructuredOutputError`.
+        """
+        if max_repairs < 0:
+            raise ValueError("max_repairs must be >= 0")
+        tracer = tracer or self.tracer or Tracer()
+        result = await self.arun(input, history=history, tracer=tracer, on_delta=on_delta)
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                parsed = schema.model_validate(_extract_json_object(result.output))
+            except Exception as exc:
+                errors = str(exc)
+                tracer.emit(
+                    "structured_parse_failed",
+                    run_id=result.run_id,
+                    agent=self.name,
+                    attempt=attempts,
+                    error=errors[:500],
+                )
+                if attempts > max_repairs:
+                    raise StructuredOutputError(
+                        f"final answer did not match schema {schema.__name__} "
+                        f"after {attempts} attempt(s)",
+                        output=result.output,
+                        errors=errors,
+                    ) from exc
+                repair = (
+                    "Your previous answer could not be validated. "
+                    f"Reply with ONLY a JSON object matching schema {schema.__name__} — "
+                    f"no markdown fences, no commentary.\n\nValidation errors:\n{errors[:2000]}"
+                )
+                tracer.emit(
+                    "structured_repair",
+                    run_id=result.run_id,
+                    agent=self.name,
+                    attempt=attempts,
+                )
+                result = await self.arun(repair, history=result.messages, on_delta=on_delta)
+                continue
+            tracer.emit(
+                "structured_parsed",
+                run_id=result.run_id,
+                agent=self.name,
+                attempt=attempts,
+                schema=schema.__name__,
+            )
+            return StructuredResult(run=result, parsed=parsed, attempts=attempts)
 
     def arun_events(
         self,

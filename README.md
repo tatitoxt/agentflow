@@ -43,6 +43,12 @@ you test agents without API keys.
   concurrently on a thread pool; results and messages stay in call order. Stop conditions
   still apply — a mid-batch stop records the already-executed calls' real results instead
   of marking them skipped.
+- **Structured output**: `agent.run_structured(input, schema=Model)` /
+  `arun_structured` parses the final answer as JSON (markdown fences and
+  surrounding prose tolerated), validates it against a pydantic schema, and on
+  failure gives the agent a repair turn — the full conversation plus the
+  validation errors — up to `max_repairs` times before raising
+  `StructuredOutputError`.
 - **Streaming**: `Agent.run(..., on_delta=fn)` invokes the callback with each
   assistant text fragment as it arrives (`provider_delta` trace events). Providers
   implementing `StreamingProvider` — OpenAI, Groq, Anthropic — stream over SSE;
@@ -233,7 +239,7 @@ make audit                     # pip-audit on the locked dependency set
 
 | Suite | Count | What it covers |
 |-------|------:|----------------|
-| `tests/unit` | 63 | tools/schemas, providers' wire formats and retries, loop, stop conditions, errors, handoff, memory, tracing, CLI, README example |
+| `tests/unit` | 70 | tools/schemas, providers' wire formats and retries, loop, stop conditions, errors, handoff, memory, tracing, CLI, README example |
 | `tests/integration` | 4 | `RedisVectorStore` KNN, persistence across instances, clear, agent retrieval from Redis |
 | `tests/e2e` | 8 | `agentflow run` / `agentflow trace` as subprocesses: outputs, exit codes, JSONL traces, tool-failure recovery, Redis-backed RAG |
 | `tests/live` | 6 | opt-in real-API smoke tests for both providers (complete/stream/`arun`); skipped without keys, run manually via the `live-smoke` workflow |

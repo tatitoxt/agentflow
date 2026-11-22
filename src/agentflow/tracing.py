@@ -26,6 +26,9 @@ EventType = Literal[
     "handoff_end",
     "run_end",
     "run_error",
+    "structured_parsed",
+    "structured_parse_failed",
+    "structured_repair",
 ]
 
 Sink = Callable[["Event"], None]
