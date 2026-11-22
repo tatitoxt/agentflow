@@ -241,12 +241,12 @@ make audit                     # pip-audit on the locked dependency set
 
 | Suite | Count | What it covers |
 |-------|------:|----------------|
-| `tests/unit` | 126 | tools/schemas, providers' wire formats, retries and SSE streaming, sync/async loop, stop conditions, budgets, history trimming, structured output, record/replay, errors, handoff, memory, tracing, CLI, README example |
+| `tests/unit` | 130 | tools/schemas, providers' wire formats, retries and SSE streaming, sync/async loop, stop conditions, budgets, history trimming, structured output, record/replay, errors, handoff, memory, tracing, CLI, README example |
 | `tests/integration` | 10 | `RedisVectorStore` KNN and agent retrieval, `PlainRedisVectorStore`, `PgVectorStore` exact + HNSW/IVFFlat search |
 | `tests/e2e` | 8 | `agentflow run` / `agentflow trace` as subprocesses: outputs, exit codes, JSONL traces, tool-failure recovery, Redis-backed RAG |
 | `tests/live` | 6 | opt-in real-API smoke tests (OpenAI, Anthropic); skipped without keys and not part of CI |
 
-Counts are from `pytest --collect-only` on this commit. CI runs the 144 unit, integration and
+Counts are from `pytest --collect-only` on this commit. CI runs the 148 unit, integration and
 E2E tests on Python 3.11 and 3.12 with `redis/redis-stack-server` and `pgvector/pgvector`
 service containers (`AGENTFLOW_REQUIRE_REDIS=1` / `AGENTFLOW_REQUIRE_PG=1` make those tests fail
 rather than skip), plus a `pip-audit --strict` job. The `tests/live` suite needs real API keys
