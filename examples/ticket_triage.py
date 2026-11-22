@@ -108,7 +108,7 @@ def build_agent(provider: Provider, billing_provider: Provider | None = None) ->
     if billing_provider is None:
         billing_provider = (
             FakeProvider(billing_policy, model="fake-billing")
-            if isinstance(provider, FakeProvider)
+            if isinstance(getattr(provider, "inner", provider), FakeProvider)
             else provider
         )
     billing = build_billing_agent(billing_provider)

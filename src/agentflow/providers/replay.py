@@ -25,14 +25,21 @@ def _request_payload(messages: list[Message], tools: list[ToolSpec]) -> dict[str
     }
 
 
+def _kind(op: str) -> str:
+    """``complete``/``acomplete`` and ``stream``/``astream`` replay interchangeably."""
+    return op.removeprefix("a")
+
+
 class RecordingProvider:
     """Passes through to ``inner`` and appends ``{op, request, response}`` JSONL
     records to ``path`` (created if missing)."""
 
     def __init__(self, inner: Any, path: str | Path) -> None:
-        self._inner: Any = inner
+        self.inner: Any = inner
         self._path = Path(path)
         self.name = f"recording-{inner.name}"
+        self.model: str | None = getattr(inner, "model", None)
+        self.prefer_sync: bool = getattr(inner, "prefer_sync", False)
 
     def _record(
         self, op: str, messages: list[Message], tools: list[ToolSpec], resp: ProviderResponse
@@ -47,7 +54,7 @@ class RecordingProvider:
             f.write(json.dumps(rec, separators=(",", ":")) + "\n")
 
     def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ProviderResponse:
-        resp: ProviderResponse = self._inner.complete(messages, tools)
+        resp: ProviderResponse = self.inner.complete(messages, tools)
         self._record("complete", messages, tools, resp)
         return resp
 
@@ -57,15 +64,15 @@ class RecordingProvider:
         tools: list[ToolSpec],
         on_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        resp: ProviderResponse = self._inner.stream(messages, tools, on_delta)
+        resp: ProviderResponse = self.inner.stream(messages, tools, on_delta)
         self._record("stream", messages, tools, resp)
         return resp
 
     async def acomplete(self, messages: list[Message], tools: list[ToolSpec]) -> ProviderResponse:
-        if hasattr(self._inner, "acomplete"):
-            resp = await self._inner.acomplete(messages, tools)
+        if hasattr(self.inner, "acomplete"):
+            resp = await self.inner.acomplete(messages, tools)
         else:
-            resp = await asyncio.to_thread(self._inner.complete, messages, tools)
+            resp = await asyncio.to_thread(self.inner.complete, messages, tools)
         resp_t: ProviderResponse = resp
         self._record("acomplete", messages, tools, resp_t)
         return resp_t
@@ -76,12 +83,14 @@ class RecordingProvider:
         tools: list[ToolSpec],
         on_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        if hasattr(self._inner, "astream"):
-            resp = await self._inner.astream(messages, tools, on_delta)
-        elif hasattr(self._inner, "stream"):
-            resp = await asyncio.to_thread(self._inner.stream, messages, tools, on_delta)
+        if hasattr(self.inner, "astream"):
+            resp = await self.inner.astream(messages, tools, on_delta)
+        elif hasattr(self.inner, "stream"):
+            resp = await asyncio.to_thread(self.inner.stream, messages, tools, on_delta)
         else:
-            resp = await asyncio.to_thread(self._inner.complete, messages, tools)
+            resp = await asyncio.to_thread(self.inner.complete, messages, tools)
+            if on_delta is not None and resp.message.content:
+                on_delta(resp.message.content)
         resp_t: ProviderResponse = resp
         self._record("astream", messages, tools, resp_t)
         return resp_t
@@ -108,7 +117,7 @@ class ReplayProvider:
                 f"replay exhausted: wanted {op}, fixture ended after {self._pos} calls"
             )
         rec = self._records[self._pos]
-        if rec["op"] != op:
+        if _kind(rec["op"]) != _kind(op):
             raise ProviderError(f"replay diverged: wanted {op}, record {self._pos} is {rec['op']}")
         want = _request_payload(messages, tools)
         if rec["request"] != want:
