@@ -1,0 +1,23 @@
+{
+  "ana@example.com": {
+    "name": "Ana Example",
+    "plan": "pro",
+    "invoices": [
+      {"id": "INV-1001", "date": "2026-10-01", "amount": 29.0},
+      {"id": "INV-1002", "date": "2026-11-01", "amount": 29.0},
+      {"id": "INV-1003", "date": "2026-11-01", "amount": 29.0}
+    ]
+  },
+  "ben@example.org": {
+    "name": "Ben Sample",
+    "plan": "enterprise",
+    "invoices": [
+      {"id": "INV-2001", "date": "2026-11-03", "amount": 990.0}
+    ]
+  },
+  "cleo@example.net": {
+    "name": "Cleo Demo",
+    "plan": "free",
+    "invoices": []
+  }
+}
